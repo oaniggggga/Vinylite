@@ -2547,6 +2547,19 @@ fn merge_guards_recursive(stmts: &mut Vec<Statement>) {
             Statement::While { body, .. } => {
                 merge_guards_recursive(body);
             }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                for s in init.iter_mut().chain(update.iter_mut()) {
+                    let mut one = vec![std::mem::replace(s, Statement::Unknown(String::new()))];
+                    merge_guards_recursive(&mut one);
+                    *s = one
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Statement::Unknown(String::new()));
+                }
+                merge_guards_recursive(body);
+            }
             Statement::Switch { arms, .. } => {
                 for arm in arms {
                     merge_guards_recursive(&mut arm.body);
@@ -2647,6 +2660,19 @@ fn remove_goto_markers(stmts: &mut Vec<Statement>) {
             Statement::While { body, .. } => {
                 remove_goto_markers(body);
             }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                for s in init.iter_mut().chain(update.iter_mut()) {
+                    let mut one = vec![std::mem::replace(s, Statement::Unknown(String::new()))];
+                    remove_goto_markers(&mut one);
+                    *s = one
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Statement::Unknown(String::new()));
+                }
+                remove_goto_markers(body);
+            }
             Statement::Switch { arms, .. } => {
                 for arm in arms {
                     remove_goto_markers(&mut arm.body);
@@ -2695,6 +2721,22 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                         else_body,
                     });
                 }
+            }
+            Statement::For {
+                mut init,
+                condition,
+                mut update,
+                mut body,
+            } => {
+                remove_dead_branches(&mut init);
+                remove_dead_branches(&mut update);
+                remove_dead_branches(&mut body);
+                out.push(Statement::For {
+                    init,
+                    condition,
+                    update,
+                    body,
+                });
             }
             Statement::While {
                 condition,
@@ -2829,6 +2871,20 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
                 ensure_boolean_condition(condition);
                 ensure_boolean_conditions_recursive(body);
             }
+            Statement::For {
+                init,
+                update,
+                condition,
+                body,
+                ..
+            } => {
+                ensure_boolean_conditions_recursive(init);
+                ensure_boolean_conditions_recursive(update);
+                if let Some(cond) = condition {
+                    ensure_boolean_condition(cond);
+                }
+                ensure_boolean_conditions_recursive(body);
+            }
             Statement::Switch { arms, .. } => {
                 for arm in arms {
                     ensure_boolean_conditions_recursive(&mut arm.body);
@@ -2844,6 +2900,209 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
             } => {
                 ensure_boolean_conditions_recursive(try_body);
                 ensure_boolean_conditions_recursive(catch_body);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// True when the statement is a simple self-update of `var` suitable for a
+/// for-loop update clause: `var = var + n` and friends.
+fn is_self_update(stmt: &Statement, var: &str) -> bool {
+    match stmt {
+        Statement::Assign { target, value } => {
+            target == var
+                && match value {
+                    Expression::Binary { left, .. } => matches!(
+                        left.as_ref(),
+                        Expression::Local(name) if name == var
+                    ),
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+/// Rewrite `init; while (i < n) { ...; i = i + 1; }` into
+/// `for (init; i < n; i = i + 1) { ... }` when the loop is counted: one
+/// leading init binding the loop var, exactly one trailing self-update, and
+/// the variable not assigned anywhere else in the body.
+fn desugar_counted_loops(stmts: &mut Vec<Statement>) {
+    let mut i = 0;
+    while i + 1 < stmts.len() {
+        let is_while = matches!(stmts[i + 1], Statement::While { .. });
+        let is_init = matches!(
+            stmts[i],
+            Statement::Assign { .. } | Statement::VarDecl { .. }
+        );
+        if is_while && is_init {
+            let loop_var = {
+                let Statement::While { condition, .. } = &stmts[i + 1] else {
+                    unreachable!()
+                };
+                match condition {
+                    Expression::Binary { left, .. } => match left.as_ref() {
+                        Expression::Local(name) => name.clone(),
+                        _ => {
+                            i += 1;
+                            continue;
+                        }
+                    },
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
+                }
+            };
+
+            // Init must bind the same variable.
+            let init_binds_var = match &stmts[i] {
+                Statement::Assign { target, .. } => target == &loop_var,
+                Statement::VarDecl { target, .. } => target == &loop_var,
+                _ => false,
+            };
+            if !init_binds_var {
+                i += 1;
+                continue;
+            }
+
+            let Statement::While { body, .. } = &mut stmts[i + 1] else {
+                unreachable!()
+            };
+            // Update must be the LAST statement of the body and self-update.
+            let update_is_last = body
+                .last()
+                .is_some_and(|last| is_self_update(last, &loop_var));
+            if !update_is_last {
+                i += 1;
+                continue;
+            }
+
+            // The variable must not be assigned anywhere else in the body.
+            let var_reassigned_in_body = body[..body.len() - 1].iter().any(|s| {
+                let mut found = false;
+                count_direct_assigns(s, &loop_var, &mut found);
+                found
+            });
+            if var_reassigned_in_body {
+                i += 1;
+                continue;
+            }
+
+            let (condition, update, body) = match std::mem::replace(
+                &mut stmts[i + 1],
+                Statement::Unknown("/* slot */".to_string()),
+            ) {
+                Statement::While {
+                    condition,
+                    mut body,
+                } => {
+                    let update = body.pop().expect("last checked");
+                    (condition, update, body)
+                }
+                _ => unreachable!(),
+            };
+            let init_stmt =
+                std::mem::replace(&mut stmts[i], Statement::Unknown("/* slot */".to_string()));
+            stmts[i] = Statement::For {
+                init: vec![init_stmt],
+                condition: Some(condition),
+                update: vec![update],
+                body,
+            };
+            stmts.remove(i + 1);
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+/// Count direct assignments to `var` in `stmt` (immediate Assign/VarDecl
+/// targets, descending into all nested bodies and For clauses).
+fn count_direct_assigns(stmt: &Statement, var: &str, found: &mut bool) {
+    if *found {
+        return;
+    }
+    match stmt {
+        Statement::Assign { target, .. } if target == var => *found = true,
+        Statement::VarDecl { target, .. } if target == var => *found = true,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for s in then_body {
+                count_direct_assigns(s, var, found);
+            }
+            if let Some(eb) = else_body {
+                for s in eb {
+                    count_direct_assigns(s, var, found);
+                }
+            }
+        }
+        Statement::While { body, .. } | Statement::ForEach { body, .. } => {
+            for s in body {
+                count_direct_assigns(s, var, found);
+            }
+        }
+        Statement::For {
+            init, update, body, ..
+        } => {
+            for s in init.iter().chain(update.iter()).chain(body.iter()) {
+                count_direct_assigns(s, var, found);
+            }
+        }
+        Statement::Switch { arms, .. } => {
+            for arm in arms {
+                for s in &arm.body {
+                    count_direct_assigns(s, var, found);
+                }
+            }
+        }
+        Statement::TryCatch {
+            try_body,
+            catch_body,
+            ..
+        } => {
+            for s in try_body.iter().chain(catch_body.iter()) {
+                count_direct_assigns(s, var, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn desugar_counted_loops_recursive(stmts: &mut Vec<Statement>) {
+    desugar_counted_loops(stmts);
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                desugar_counted_loops_recursive(then_body);
+                if let Some(eb) = else_body {
+                    desugar_counted_loops_recursive(eb);
+                }
+            }
+            Statement::While { body, .. } => desugar_counted_loops_recursive(body),
+            Statement::For { body, .. } => desugar_counted_loops_recursive(body),
+            Statement::ForEach { body, .. } => desugar_counted_loops_recursive(body),
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    desugar_counted_loops_recursive(&mut arm.body);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                desugar_counted_loops_recursive(try_body);
+                desugar_counted_loops_recursive(catch_body);
             }
             _ => {}
         }
@@ -2877,6 +3136,19 @@ fn remove_empty_if_blocks(stmts: &mut Vec<Statement>) {
                 remove_empty_if_blocks(catch_body);
             }
             Statement::While { body, .. } => {
+                remove_empty_if_blocks(body);
+            }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                for s in init.iter_mut().chain(update.iter_mut()) {
+                    let mut one = vec![std::mem::replace(s, Statement::Unknown(String::new()))];
+                    remove_empty_if_blocks(&mut one);
+                    *s = one
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Statement::Unknown(String::new()));
+                }
                 remove_empty_if_blocks(body);
             }
             Statement::Switch { arms, .. } => {
@@ -3120,6 +3392,19 @@ fn wrap_unwrapped_catch_statements(stmts: &mut Vec<Statement>) {
             Statement::While { body, .. } => {
                 wrap_unwrapped_catch_statements(body);
             }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                for s in init.iter_mut().chain(update.iter_mut()) {
+                    let mut one = vec![std::mem::replace(s, Statement::Unknown(String::new()))];
+                    wrap_unwrapped_catch_statements(&mut one);
+                    *s = one
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Statement::Unknown(String::new()));
+                }
+                wrap_unwrapped_catch_statements(body);
+            }
             Statement::Switch { arms, .. } => {
                 for arm in arms {
                     wrap_unwrapped_catch_statements(&mut arm.body);
@@ -3354,6 +3639,20 @@ fn simplify_conditions_recursive(stmts: &mut [Statement]) {
                 simplify_condition_fixpoint(condition);
                 simplify_conditions_recursive(body);
             }
+            Statement::For {
+                init,
+                update,
+                condition,
+                body,
+                ..
+            } => {
+                simplify_conditions_recursive(init);
+                simplify_conditions_recursive(update);
+                if let Some(cond) = condition {
+                    simplify_condition_fixpoint(cond);
+                }
+                simplify_conditions_recursive(body);
+            }
             Statement::Switch { discriminant, arms } => {
                 simplify_condition_fixpoint(discriminant);
                 for arm in arms {
@@ -3429,6 +3728,20 @@ fn collect_bare_condition_names(stmts: &[Statement], out: &mut std::collections:
                 collect_bare_names_in_expr(condition, out);
                 collect_bare_condition_names(body, out);
             }
+            Statement::For {
+                init,
+                update,
+                condition,
+                body,
+                ..
+            } => {
+                collect_bare_condition_names(init, out);
+                collect_bare_condition_names(update, out);
+                if let Some(cond) = condition {
+                    collect_bare_names_in_expr(cond, out);
+                }
+                collect_bare_condition_names(body, out);
+            }
             Statement::Switch { arms, .. } => {
                 for arm in arms {
                     collect_bare_condition_names(&arm.body, out);
@@ -3498,6 +3811,13 @@ fn apply_types_recursive(
                 }
             }
             Statement::While { body, .. } => {
+                apply_types_recursive(body, name_types, bare_conditions);
+            }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                apply_types_recursive(init, name_types, bare_conditions);
+                apply_types_recursive(update, name_types, bare_conditions);
                 apply_types_recursive(body, name_types, bare_conditions);
             }
             Statement::Switch { arms, .. } => {
@@ -3607,6 +3927,20 @@ fn rename_var_in_stmts(stmts: &mut [Statement], old_name: &str, new_name: &str) 
             }
             Statement::While { condition, body } => {
                 rename_var_in_expr(condition, old_name, new_name);
+                rename_var_in_stmts(body, old_name, new_name);
+            }
+            Statement::For {
+                init,
+                update,
+                condition,
+                body,
+                ..
+            } => {
+                rename_var_in_stmts(init, old_name, new_name);
+                rename_var_in_stmts(update, old_name, new_name);
+                if let Some(cond) = condition {
+                    rename_var_in_expr(cond, old_name, new_name);
+                }
                 rename_var_in_stmts(body, old_name, new_name);
             }
             Statement::Switch { discriminant, arms } => {
@@ -3743,6 +4077,15 @@ fn convert_assigns_to_var_decls_recursive(
                 Statement::While { body, .. } => {
                     convert_assigns_to_var_decls_recursive(body, declared_vars);
                 }
+                Statement::For {
+                    init, update, body, ..
+                } => {
+                    // Init may declare the loop variable; the body then sees
+                    // it as declared. Update clauses cannot declare.
+                    convert_assigns_to_var_decls_recursive(init, declared_vars);
+                    convert_assigns_to_var_decls_recursive(body, declared_vars);
+                    convert_assigns_to_var_decls_recursive(update, declared_vars);
+                }
                 Statement::Switch { arms, .. } => {
                     // Arms share the switch block scope (like straight-line
                     // code), so thread the same declaration set through.
@@ -3840,6 +4183,20 @@ fn collect_locals_in_stmts(stmts: &[Statement], locals: &mut Vec<String>) {
                 collect_locals_in_expr(condition, locals);
                 collect_locals_in_stmts(body, locals);
             }
+            Statement::For {
+                init,
+                update,
+                condition,
+                body,
+                ..
+            } => {
+                collect_locals_in_stmts(init, locals);
+                collect_locals_in_stmts(update, locals);
+                if let Some(cond) = condition {
+                    collect_locals_in_expr(cond, locals);
+                }
+                collect_locals_in_stmts(body, locals);
+            }
             Statement::Switch { discriminant, arms } => {
                 collect_locals_in_expr(discriminant, locals);
                 for arm in arms {
@@ -3929,6 +4286,13 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
                 restructure_for_each_loops_recursive(catch_body);
             }
             Statement::ForEach { body, .. } => {
+                restructure_for_each_loops_recursive(body);
+            }
+            Statement::For {
+                init, update, body, ..
+            } => {
+                restructure_for_each_loops_recursive(init);
+                restructure_for_each_loops_recursive(update);
                 restructure_for_each_loops_recursive(body);
             }
             _ => {}
@@ -4250,6 +4614,9 @@ pub fn lower_method_to_ast(
 
     // Restructure for-each loops
     restructure_for_each_loops_recursive(&mut statements);
+
+    // Canonicalize counted loops: `init; while (i < n) { ...; i++ }` -> for
+    desugar_counted_loops_recursive(&mut statements);
 
     // For-each restructuring can expose new empty guards — sweep again.
     remove_empty_if_blocks(&mut statements);
@@ -4675,31 +5042,34 @@ mod tests {
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
         );
-        // The loop body must contain the reconstructed if/else, not just the
-        // increment: While { body: [If { then, else }, iinc] }.
-        let while_debug = method
+        // The counted loop must be canonicalized into a For whose body keeps
+        // the if/else: For { init: [var_2 = 0], cond: var_2 < 5,
+        // update: [var_2++], body: [If { then, else }] }.
+        let for_debug = method
             .statements
             .iter()
-            .find(|s| matches!(s, Statement::While { .. }))
+            .find(|s| matches!(s, Statement::For { .. }))
             .map(|s| format!("{s:?}"))
-            .expect("while loop missing");
+            .expect("for loop missing");
         assert!(
-            while_debug.contains("op: Lt"),
-            "loop condition i < 5 missing: {while_debug}"
-        );
-        let if_debug = while_debug;
-        assert!(
-            if_debug.contains("even") && if_debug.contains("odd"),
-            "if/else branches missing in loop body: {if_debug}"
-        );
-        // Both branches of the inner if/else must be non-empty.
-        assert!(
-            if_debug.contains("then_body: ["),
-            "then branch empty: {if_debug}"
+            for_debug.contains("op: Lt"),
+            "loop condition i < 5 missing: {for_debug}"
         );
         assert!(
-            if_debug.contains("else_body: Some(["),
-            "else branch missing: {if_debug}"
+            for_debug.contains("ConstInt(0)"),
+            "loop init missing: {for_debug}"
+        );
+        assert!(
+            for_debug.contains("even") && for_debug.contains("odd"),
+            "if/else branches missing in loop body: {for_debug}"
+        );
+        assert!(
+            for_debug.contains("then_body: ["),
+            "then branch empty: {for_debug}"
+        );
+        assert!(
+            for_debug.contains("else_body: Some(["),
+            "else branch missing: {for_debug}"
         );
     }
 

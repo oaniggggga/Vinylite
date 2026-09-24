@@ -20,12 +20,10 @@ fn simple_test_class_decompiles_to_expected_source() {
         "public class SimpleTest",
         "StringBuilder var_1 = new StringBuilder()",
         "var_1.append(\"test:\")",
-        "int var_2 = 0",
-        "while (var_2 < 5)",
+        "for (int var_2 = 0; var_2 < 5; var_2++)",
         "if ((var_2 % 2) != 0)",
         "var_1.append(\"odd\").append(var_2)",
         "var_1.append(\"even\").append(var_2)",
-        "var_2 = var_2 + 1",
         "System.out.println(var_1.toString())",
     ] {
         assert!(
@@ -34,9 +32,9 @@ fn simple_test_class_decompiles_to_expected_source() {
         );
     }
 
-    // The loop body must be non-empty: if/else lives inside the while.
-    let while_start = source.find("while").expect("while present");
-    let loop_body = &source[while_start..];
+    // The loop body must be non-empty: if/else lives inside the for.
+    let for_start = source.find("for (").expect("for present");
+    let loop_body = &source[for_start..];
     assert!(
         loop_body.contains("odd") && loop_body.contains("even"),
         "loop body lost the if/else branches:\n{loop_body}"

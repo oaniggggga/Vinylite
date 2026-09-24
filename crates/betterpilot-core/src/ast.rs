@@ -19,6 +19,13 @@ pub enum Statement {
         condition: Expression,
         body: Vec<Statement>,
     },
+    /// Canonical for-loop: `for (init; condition; update) { body }`.
+    For {
+        init: Vec<Statement>,
+        condition: Option<Expression>,
+        update: Vec<Statement>,
+        body: Vec<Statement>,
+    },
     ForEach {
         var_type: Option<String>,
         var_name: String,
@@ -365,6 +372,70 @@ fn render_method(method: &MethodDecl) -> String {
     out
 }
 
+/// Render just the "head" text of a statement (no pad, no trailing `;`)
+/// for use inside `for (...)` headers.
+fn render_statement_head(stmt: &Statement) -> String {
+    let text = render_statement(stmt, 0);
+    let trimmed = text.trim();
+    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
+}
+
+/// Render `x = x + 1` as `x++`, `x = x - 1` as `x--`, and
+/// `x = x <op> y` as `x <op>= y` (CFR-style compound assignment).
+/// Returns `None` when the statement is not a self-assignment pattern.
+fn compound_assignment(target: &str, value: &Expression) -> Option<String> {
+    let Expression::Binary { left, op, right } = value else {
+        return None;
+    };
+    let is_self = matches!(left.as_ref(), Expression::Local(name) if name == target)
+        || (target.contains('.') && matches!(left.as_ref(), Expression::FieldAccess { .. }));
+    if !is_self {
+        return None;
+    }
+    match op {
+        BinaryOp::Add
+        | BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Rem
+        | BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::Xor
+        | BinaryOp::Shl
+        | BinaryOp::Shr
+        | BinaryOp::Ushr => {
+            let op_str = match op {
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Mul => "*",
+                BinaryOp::Div => "/",
+                BinaryOp::Rem => "%",
+                BinaryOp::And => "&",
+                BinaryOp::Or => "|",
+                BinaryOp::Xor => "^",
+                BinaryOp::Shl => "<<",
+                BinaryOp::Shr => ">>",
+                BinaryOp::Ushr => ">>>",
+                _ => unreachable!(),
+            };
+            let re = |e: &Expression| render_expression_pub(e);
+            if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+                && matches!(right.as_ref(), Expression::ConstInt(1))
+            {
+                let inc = if matches!(op, BinaryOp::Add) {
+                    "++"
+                } else {
+                    "--"
+                };
+                Some(format!("{target}{inc}"))
+            } else {
+                Some(format!("{target} {op_str}= {}", re(right)))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn render_statement(stmt: &Statement, indent: usize) -> String {
     let mut out = String::new();
     let pad = "    ".repeat(indent);
@@ -376,9 +447,13 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
                 return out;
             }
             out.push_str(&pad);
-            out.push_str(target);
-            out.push_str(" = ");
-            out.push_str(&render_expression_at(value, indent));
+            if let Some(compound) = compound_assignment(target, value) {
+                out.push_str(&compound);
+            } else {
+                out.push_str(target);
+                out.push_str(" = ");
+                out.push_str(&render_expression_at(value, indent));
+            }
             out.push_str(";\n");
         }
         Statement::VarDecl {
@@ -420,14 +495,25 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
             for s in then_body {
                 out.push_str(&render_statement(s, indent + 1));
             }
-            out.push_str(&pad);
-            out.push_str("}\n");
             if let Some(else_body) = else_body {
+                // CFR shape: `} else {` on one line; an else whose body is a
+                // single If renders as an `else if` chain.
                 out.push_str(&pad);
-                out.push_str("else {\n");
-                for s in else_body {
-                    out.push_str(&render_statement(s, indent + 1));
+                if else_body.len() == 1 && matches!(else_body[0], Statement::If { .. }) {
+                    out.push_str("} else ");
+                    // The nested if emits its own leading pad; strip it since
+                    // "} else " already ends this line's prefix.
+                    let nested = render_statement(&else_body[0], indent);
+                    out.push_str(nested.trim_start());
+                } else {
+                    out.push_str("} else {\n");
+                    for s in else_body {
+                        out.push_str(&render_statement(s, indent + 1));
+                    }
+                    out.push_str(&pad);
+                    out.push_str("}\n");
                 }
+            } else {
                 out.push_str(&pad);
                 out.push_str("}\n");
             }
@@ -436,6 +522,38 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
             out.push_str(&pad);
             out.push_str("while (");
             out.push_str(&render_expression_at(condition, indent));
+            out.push_str(") {\n");
+            for s in body {
+                out.push_str(&render_statement(s, indent + 1));
+            }
+            out.push_str(&pad);
+            out.push_str("}\n");
+        }
+        Statement::For {
+            init,
+            condition,
+            update,
+            body,
+        } => {
+            out.push_str(&pad);
+            out.push_str("for (");
+            for (n, s) in init.iter().enumerate() {
+                if n > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_statement_head(s));
+            }
+            out.push_str("; ");
+            if let Some(cond) = condition {
+                out.push_str(&render_expression_at(cond, indent));
+            }
+            out.push_str("; ");
+            for (n, s) in update.iter().enumerate() {
+                if n > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_statement_head(s));
+            }
             out.push_str(") {\n");
             for s in body {
                 out.push_str(&render_statement(s, indent + 1));
