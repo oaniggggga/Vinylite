@@ -3081,7 +3081,247 @@ fn try_catch_has_synthetic_close_handler(tc: &Statement) -> bool {
     closes && suppresses
 }
 
+/// Fold the clean javac try-with-resources shape:
+/// `[Res res = expr;] TryCatch{ try: [body], catch: Throwable [TC{try:
+/// [res.close()], catch: T [x.addSuppressed(y), throw y]}] }; res.close();
+/// Return(... res-var ...)`
+/// becomes `TryCatch{ resources: [res decl], try_body: body + return }`.
+/// Everything the compiler synthesizes (close calls, the suppression chain)
+/// is deleted: javac regenerates it from `try (...)`.
+fn fold_try_with_resources(stmts: &mut Vec<Statement>) {
+    let mut i = 0;
+    while i < stmts.len() {
+        // 1. Match the primary Throwable handler with the nested suppress try.
+        let close_target: Option<String> = {
+            let Statement::TryCatch {
+                catch_type,
+                catch_body,
+                ..
+            } = &stmts[i]
+            else {
+                i += 1;
+                continue;
+            };
+            if catch_body.len() != 1 {
+                i += 1;
+                continue;
+            }
+            if catch_type != "Throwable" {
+                // close-cannot-throw shape: the compiler leaves the resource
+                // outside the try and the user catch handles everything.
+                // Accept it; the sibling close + suppression check below
+                // still applies.
+            }
+            let Statement::TryCatch {
+                try_body: inner_try,
+                catch_body: inner_catch,
+                ..
+            } = &catch_body[0]
+            else {
+                i += 1;
+                continue;
+            };
+            if inner_try.len() != 1 {
+                i += 1;
+                continue;
+            }
+            let Statement::Expression(Expression::Invoke { target, args }) = &inner_try[0] else {
+                i += 1;
+                continue;
+            };
+            if !args.is_empty() || !target.ends_with(".close") {
+                i += 1;
+                continue;
+            }
+            let suppresses = inner_catch.iter().any(|s| {
+                let rendered = format!("{s:?}");
+                rendered.contains("addSuppressed") || rendered.contains("throw ")
+            });
+            if !suppresses {
+                i += 1;
+                continue;
+            }
+            Some(
+                target
+                    .strip_suffix(".close")
+                    .unwrap_or("")
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        };
+        let Some(res) = close_target else { continue };
+
+        // 2. The resource declaration must sit immediately before the try.
+        //    The decl is keyed at its LAST instruction offset, which may land
+        //    before the try range start while earlier decls (or other
+        //    statements) sit between it and the try: walk back over any
+        //    statements that do not touch the resource.
+        let mut decl_pos = None;
+        if i > 0 {
+            for back in (0..i).rev() {
+                let rendered = format!("{:?}", stmts[back]);
+                if rendered.contains(&res) {
+                    decl_pos = Some(back);
+                    break;
+                }
+                if back < i - 2 {
+                    break;
+                }
+            }
+        }
+        let Some(dp) = decl_pos else {
+            i += 1;
+            continue;
+        };
+        let try_pos = dp + 1;
+        let resource = match std::mem::replace(&mut stmts[dp], Statement::Unknown(String::new())) {
+            Statement::VarDecl {
+                target,
+                var_type,
+                value: Some(value),
+            } if target == res => Statement::VarDecl {
+                target,
+                var_type,
+                value: Some(value),
+            },
+            Statement::Assign { target, value } if target == res => Statement::VarDecl {
+                target,
+                var_type: None,
+                value: Some(value),
+            },
+            other => {
+                stmts[dp] = other;
+                i += 1;
+                continue;
+            }
+        };
+        // The slot that held the declaration is gone from the statement
+        // stream; shift the list so no empty placeholder renders.
+        stmts.remove(dp);
+        let try_pos = try_pos - 1;
+
+        // 3. Empty the synthetic handler and lift the declaration.
+        let mut tc = std::mem::replace(&mut stmts[try_pos], Statement::Unknown(String::new()));
+        let Statement::TryCatch {
+            try_body: ref mut try_body_slot,
+            catch_body: ref mut catch_body_slot,
+            resources: ref mut resources_slot,
+            ..
+        } = tc
+        else {
+            unreachable!()
+        };
+        catch_body_slot.clear();
+        resources_slot.push(resource);
+
+        // 4. Drop the normal-path sibling close.
+        let mut consumed_tail = 0;
+        if try_pos + 1 < stmts.len()
+            && matches!(
+                &stmts[try_pos + 1],
+                Statement::Expression(Expression::Invoke { target, args })
+                if *target == format!("{res}.close") && args.is_empty()
+            )
+        {
+            stmts.remove(try_pos + 1);
+            consumed_tail += 1;
+        }
+
+        // 5. A trailing return of a variable declared at the end of the try
+        //    body belongs inside the try (javac hoists it past close).
+        let last_decl = match try_body_slot.last() {
+            Some(Statement::VarDecl { target, .. }) => Some(target.clone()),
+            Some(Statement::Assign { target, .. }) => Some(target.clone()),
+            _ => None,
+        };
+        if let Some(declared) = last_decl
+            && try_pos + 1 < stmts.len()
+        {
+            let moves_in = match &stmts[try_pos + 1] {
+                Statement::Return(Some(value)) => {
+                    let rendered = format!("{value:?}");
+                    rendered.contains(&declared)
+                }
+                _ => false,
+            };
+            if moves_in {
+                let ret = stmts.remove(try_pos + 1);
+                try_body_slot.push(ret);
+                consumed_tail += 1;
+            }
+        }
+        // tc was taken out of the list; write the mutated node back.
+        stmts[try_pos] = tc;
+        i = try_pos + 1 + consumed_tail;
+    }
+}
+
 fn finalize_try_shapes(stmts: &mut Vec<Statement>) {
+    fold_try_with_resources(stmts);
+    // In-try resource hoist (close-cannot-throw shape: decl + close inside
+    // the try, user catch handler): fold decl into resources.
+    {
+        let mut k = 0;
+        while k < stmts.len() {
+            let Statement::TryCatch {
+                try_body,
+                resources,
+                ..
+            } = &mut stmts[k]
+            else {
+                k += 1;
+                continue;
+            };
+            if !resources.is_empty() || try_body.len() < 3 {
+                k += 1;
+                continue;
+            }
+            // Resource = first decl; close = last body statement.
+            let res_target = match &try_body[0] {
+                Statement::VarDecl { target, .. } => target.clone(),
+                Statement::Assign { target, .. } => target.clone(),
+                _ => {
+                    k += 1;
+                    continue;
+                }
+            };
+            let closes_at_end = matches!(
+                try_body.last(),
+                Some(Statement::Expression(Expression::Invoke { target, args }))
+                if *target == format!("{res_target}.close") && args.is_empty()
+            );
+            if !closes_at_end {
+                k += 1;
+                continue;
+            }
+            let resource = match try_body.remove(0) {
+                Statement::VarDecl {
+                    target,
+                    var_type,
+                    value: Some(value),
+                } => Statement::VarDecl {
+                    target,
+                    var_type,
+                    value: Some(value),
+                },
+                Statement::Assign { target, value } => Statement::VarDecl {
+                    target,
+                    var_type: None,
+                    value: Some(value),
+                },
+                other => {
+                    try_body.insert(0, other);
+                    k += 1;
+                    continue;
+                }
+            };
+            try_body.pop();
+            resources.push(resource);
+            k += 1;
+        }
+    }
     // In-try resource hoist: try { Res r = ...; use; r.close(); } catch
     // (Throwable e) { r.close(); addSuppressed; throw } -> try (Res r = ...) { use }.
     let mut k = 0;
