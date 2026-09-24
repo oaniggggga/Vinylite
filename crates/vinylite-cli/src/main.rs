@@ -94,8 +94,8 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
     let mut failed_classes: usize = 0;
     for entry in &entries {
         if let Some(class_bytes) = &entry.class_bytes {
-            let source = std::panic::catch_unwind(|| decompile_class(class_bytes)).unwrap_or_else(
-                |panic| {
+            let source =
+                std::panic::catch_unwind(|| decompile_class(class_bytes)).unwrap_or_else(|panic| {
                     failed_classes += 1;
                     let detail = panic
                         .downcast_ref::<&str>()
@@ -104,8 +104,7 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
                         .unwrap_or_else(|| "unknown panic".to_string());
                     eprintln!("warning: panicked on {}: {detail}", entry.name);
                     "// unrecoverable: decompiler panicked on this class\n".to_string()
-                },
-            );
+                });
             let internal_name = entry.name.replace(".class", "");
             class_sources.insert(internal_name, source.trim_end().to_string());
         }
