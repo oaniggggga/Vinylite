@@ -58,7 +58,10 @@ fn try_patterns_render_structurally() {
     }
     // The un-droppable invariant: catch bodies survive.
     assert!(source.contains("return -1;"), "catch body lost\n{source}");
-    assert!(source.contains("return 0;"), "multi-catch body lost\n{source}");
+    assert!(
+        source.contains("return 0;"),
+        "multi-catch body lost\n{source}"
+    );
 }
 
 #[test]
