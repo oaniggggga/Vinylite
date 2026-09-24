@@ -2,7 +2,7 @@
 
 Recovery-first JVM classfile decompiler in Rust (CFR/Vineflower direction).
 
-What it does today:
+## What it does today
 
 - tolerant classfile parsing (partial constant pool, diagnostics with severity + offsets);
 - full bytecode decoding incl. `tableswitch`/`lookupswitch`/`wide`, malformed-input recovery;
@@ -11,19 +11,50 @@ What it does today:
 - generic `Signature` attributes for methods, fields and superclasses
   (`List<String>`, `Enum<Xenon>`);
 - readable output: LVT-accurate locals, boolean simplification
-  (`flag != 0` → `flag`, `x = 1` → `x = true`), constant folding,
+  (`flag != 0` -> `flag`, `x = 1` -> `x = true`), constant folding,
   lambda inlining, enum detection, inner-class merging;
 - switch reconstruction (`tableswitch`/`lookupswitch` with multi-label
   cases, fallthrough preservation, per-arm join-value resolution);
 - `StringConcatFactory` folding back to `a + b` chains;
+- while/for loop reconstruction with nested if/else bodies;
+- discarded method calls kept as expression statements (`sb.append("x");`);
+- non-boolean conditions restored to valid Java (`if (i % 2 != 0)`);
 - dead-code tolerance: unreachable traps are stack-sandboxed (never
   corrupt live values), dead noise pruned, informative dead code kept;
 - CLI for single `.class` files and whole `.jar`/`.zip` archives.
 
-Run (MSVC toolchain required on Windows, e.g. via `vcvars64.bat`):
+## Build & run
+
+A stable Rust toolchain is enough (no C compiler needed).
 
 ```powershell
-cargo test -p betterpilot-core
+cargo test --workspace
 cargo run -p betterpilot-cli -- path\to\Example.class
 cargo run -p betterpilot-cli -- app.jar -o out/
 ```
+
+Single class prints to stdout; `-o` writes a file, directory, or archive
+(extension decides). Jars are decompiled class-by-class with inner-class
+re-inlining; unrecoverable entries get a fallback stub.
+
+## Known limitations
+
+- for-loop desugaring is partial: loops render as `while` with the update
+  inside the body;
+- ternaries, try-with-resources and some try/catch shapes are not fully
+  reconstructed;
+- javac line-number tables are not used yet.
+
+## Development
+
+```powershell
+cargo fmt
+cargo clippy --workspace --all-targets
+cargo test --workspace
+```
+
+CI runs fmt check, clippy `-D warnings`, tests and a release build on every push.
+
+## License
+
+MIT
