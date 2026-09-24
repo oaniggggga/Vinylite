@@ -87,13 +87,31 @@ fn process_class(bytes: &[u8], output: &Option<PathBuf>) {
 fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
     let entries = parse_jar(bytes);
 
+    // Recovery-first at the JAR level too: one poisoned class must not take
+    // down the whole archive. A panicking decompile degrades to a stub and
+    // the run continues; the panic is reported on stderr.
     let mut class_sources: HashMap<String, String> = HashMap::new();
+    let mut failed_classes: usize = 0;
     for entry in &entries {
         if let Some(class_bytes) = &entry.class_bytes {
-            let source = decompile_class(class_bytes);
+            let source = std::panic::catch_unwind(|| decompile_class(class_bytes)).unwrap_or_else(
+                |panic| {
+                    failed_classes += 1;
+                    let detail = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".to_string());
+                    eprintln!("warning: panicked on {}: {detail}", entry.name);
+                    "// unrecoverable: decompiler panicked on this class\n".to_string()
+                },
+            );
             let internal_name = entry.name.replace(".class", "");
             class_sources.insert(internal_name, source.trim_end().to_string());
         }
+    }
+    if failed_classes > 0 {
+        eprintln!("warning: {failed_classes} class(es) failed and were stubbed");
     }
 
     let mut rendered: Vec<(String, String)> = Vec::new();

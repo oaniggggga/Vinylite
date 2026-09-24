@@ -76,6 +76,29 @@ Single class prints to stdout; `-o` writes a file, directory, or archive
 (extension decides). Jars are decompiled class-by-class with inner-class
 re-inlining; unrecoverable entries get a fallback stub.
 
+## Benchmarks
+
+Wall-clock time to decompile complete jars (Windows x64, release build,
+single run; CFR 0.152 with a warmed JVM ? its cost includes JVM startup
+and JIT that Vinylite does not pay):
+
+| Jar | Classes | Vinylite | CFR 0.152 | Speedup |
+|---|---|---|---|---|
+| gson 2.11.0 | 224 | **0.27 s** | 1.69 s | 6.3x |
+| commons-lang3 3.14.0 | 404 | **0.44 s** | 3.63 s | 8.2x |
+| commons-io 2.15.1 | 339 | **0.32 s** | 2.67 s | 8.3x |
+
+Vinylite emits one `.java` per classfile including every nested/anonymous
+class; CFR inlines most anonymous classes into their parent and skips
+`module-info`, so file counts differ by design.
+
+Known output gaps vs CFR (measured on the same jars): CFR reconstructs
+try-with-resources and emits ~6x more try blocks on commons-lang3;
+Vinylite currently degrades some of those to straight-line code with
+`catch`-less fallbacks. Enum constant bodies with method overrides are
+better in CFR. Speed and robustness (zero panics across the corpora)
+are Vinylite's current strengths.
+
 ## Known limitations
 
 - ternary reconstruction and try-with-resources are not implemented yet;

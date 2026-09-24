@@ -2433,6 +2433,14 @@ fn restructure_control_flow(
                     .position(|(off, _)| *off >= goto_target)
                     .unwrap_or(result.len());
 
+                // Degenerate ranges (empty else arm, join before branch start,
+                // or a goto landing inside the else sequence) mean this does
+                // not match the expected if/else shape: bail out safely.
+                if else_end <= g + 1 || else_end > result.len() {
+                    i += 1;
+                    continue;
+                }
+
                 let else_raw: Vec<(usize, Statement)> = result[i + 1..g].to_vec();
                 let then_raw: Vec<(usize, Statement)> = result[g + 1..else_end].to_vec();
 
