@@ -2954,90 +2954,109 @@ fn ternary_value_ok(expr: &Expression) -> bool {
 /// Collapse `if (c) { x = a; } else { x = b; }` into `x = c ? a : b;`
 /// (plus the implicit-else `if (c) { return a; } return b;` variant below)
 /// recursively across all statement bodies.
+///
+/// Runs to a fixpoint: rule 1 can produce the `return` that rule 2 needs
+/// (`if (a) { return n; } if (b) { return x; } else { return y; }`), and
+/// rule 2 chains into nested ternaries
+/// (`if (a) return 1; if (b) return 2; return 3;`).
+/// Terminates: rule 1 never creates an `If`, rule 2 shrinks the list.
 fn reconstruct_ternaries(stmts: &mut Vec<Statement>) {
-    let mut i = 0;
-    while i < stmts.len() {
-        // Rule 2 first: implicit else via fall-through return.
-        // `if (c) { return a; } return b;` -> `return c ? a : b;`
-        // Sound because the then-arm diverges (returns), so reaching the
-        // second return means `c` was false — an implicit else.
-        let fallthrough = match (&stmts[i], stmts.get(i + 1)) {
-            (
-                Statement::If {
-                    condition,
-                    then_body,
-                    else_body: None,
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < stmts.len() {
+            // Rule 2 first: implicit else via fall-through return.
+            // `if (c) { return a; } return b;` -> `return c ? a : b;`
+            // Sound because the then-arm diverges (returns), so reaching the
+            // second return means `c` was false — an implicit else.
+            let fallthrough = match (&stmts[i], stmts.get(i + 1)) {
+                (
+                    Statement::If {
+                        condition,
+                        then_body,
+                        else_body: None,
+                    },
+                    Some(Statement::Return(Some(b))),
+                ) => match then_body.as_slice() {
+                    [Statement::Return(Some(a))]
+                        if a != b && ternary_value_ok(a) && ternary_value_ok(b) =>
+                    {
+                        Some((condition.clone(), a.clone(), b.clone()))
+                    }
+                    _ => None,
                 },
-                Some(Statement::Return(Some(b))),
-            ) => match then_body.as_slice() {
-                [Statement::Return(Some(a))] if ternary_value_ok(a) && ternary_value_ok(b) => {
-                    Some((condition.clone(), a.clone(), b.clone()))
-                }
                 _ => None,
-            },
-            _ => None,
-        };
-        if let Some((cond, a, b)) = fallthrough {
-            stmts[i] = Statement::Return(Some(Expression::Ternary {
-                condition: Box::new(cond),
-                then_expr: Box::new(a),
-                else_expr: Box::new(b),
-            }));
-            stmts.remove(i + 1);
-            i += 1;
-            continue;
-        }
-
-        let (then_join, else_join, cond) = {
-            let Statement::If {
-                condition,
-                then_body,
-                else_body: Some(else_body),
-            } = &stmts[i]
-            else {
+            };
+            if let Some((cond, a, b)) = fallthrough {
+                stmts[i] = Statement::Return(Some(Expression::Ternary {
+                    condition: Box::new(cond),
+                    then_expr: Box::new(a),
+                    else_expr: Box::new(b),
+                }));
+                stmts.remove(i + 1);
+                changed = true;
                 i += 1;
                 continue;
-            };
-            match (ternary_join(then_body), ternary_join(else_body)) {
-                (Some(t), Some(e)) => (t, e, condition.clone()),
-                _ => {
+            }
+
+            let (then_join, else_join, cond) = {
+                let Statement::If {
+                    condition,
+                    then_body,
+                    else_body: Some(else_body),
+                } = &stmts[i]
+                else {
                     i += 1;
                     continue;
+                };
+                match (ternary_join(then_body), ternary_join(else_body)) {
+                    (Some(t), Some(e)) => (t, e, condition.clone()),
+                    _ => {
+                        i += 1;
+                        continue;
+                    }
                 }
+            };
+
+            let (t_target, t_value, t_ret) = then_join;
+            let (e_target, e_value, e_ret) = else_join;
+
+            // Both arms must agree on the join kind (both return or both assign
+            // the same target), the values must differ (`c ? x : x` is noise
+            // a human would never write) and be duplication-safe.
+            if t_ret != e_ret
+                || t_target != e_target
+                || t_value == e_value
+                || !ternary_value_ok(&t_value)
+                || !ternary_value_ok(&e_value)
+            {
+                i += 1;
+                continue;
             }
-        };
 
-        let (t_target, t_value, t_ret) = then_join;
-        let (e_target, e_value, e_ret) = else_join;
-
-        // Both arms must agree on the join kind (both return or both assign
-        // the same target) and the values must be duplication-safe.
-        if t_ret != e_ret
-            || t_target != e_target
-            || !ternary_value_ok(&t_value)
-            || !ternary_value_ok(&e_value)
-        {
+            let ternary = Expression::Ternary {
+                condition: Box::new(cond),
+                then_expr: Box::new(t_value),
+                else_expr: Box::new(e_value),
+            };
+            stmts[i] = if t_ret {
+                changed = true;
+                Statement::Return(Some(ternary))
+            } else if t_target.is_empty() {
+                i += 1;
+                continue;
+            } else {
+                changed = true;
+                Statement::Assign {
+                    target: t_target,
+                    value: ternary,
+                }
+            };
             i += 1;
-            continue;
         }
-
-        let ternary = Expression::Ternary {
-            condition: Box::new(cond),
-            then_expr: Box::new(t_value),
-            else_expr: Box::new(e_value),
-        };
-        stmts[i] = if t_ret {
-            Statement::Return(Some(ternary))
-        } else if t_target.is_empty() {
-            i += 1;
-            continue;
-        } else {
-            Statement::Assign {
-                target: t_target,
-                value: ternary,
-            }
-        };
-        i += 1;
+        if !changed {
+            break;
+        }
     }
 }
 
@@ -5424,6 +5443,11 @@ pub fn lower_method_to_ast(
     // Wrap any remaining catch handlers referencing 'e' into try-catch blocks
     wrap_unwrapped_catch_statements(&mut statements);
 
+    // Late structural passes (try shaping, terminator truncation, loop
+    // canonicalization) can expose fresh if/return adjacencies that did not
+    // exist during the first ternary sweep — run it once more. Idempotent.
+    reconstruct_ternaries_recursive(&mut statements);
+
     // Track local variable declarations
     let mut declared_vars = std::collections::HashSet::new();
     for p in &param_names {
@@ -5978,6 +6002,38 @@ mod tests {
                 condition: Box::new(Expression::Local("c".to_string())),
                 then_expr: Box::new(Expression::ConstInt(-1)),
                 else_expr: Box::new(Expression::ConstInt(1)),
+            }))],
+        );
+    }
+
+    #[test]
+    fn ternary_chains_across_rules_to_fixpoint() {
+        // `if (a) { return 1; } if (b) { return 2; } else { return 3; }`
+        // needs two passes: rule 1 fuses the inner if/else, rule 2 then
+        // fuses the outer fall-through into a nested ternary.
+        let mut stmts = vec![
+            Statement::If {
+                condition: Expression::Local("a".to_string()),
+                then_body: vec![Statement::Return(Some(Expression::ConstInt(1)))],
+                else_body: None,
+            },
+            Statement::If {
+                condition: Expression::Local("b".to_string()),
+                then_body: vec![Statement::Return(Some(Expression::ConstInt(2)))],
+                else_body: Some(vec![Statement::Return(Some(Expression::ConstInt(3)))]),
+            },
+        ];
+        reconstruct_ternaries_recursive(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![Statement::Return(Some(Expression::Ternary {
+                condition: Box::new(Expression::Local("a".to_string())),
+                then_expr: Box::new(Expression::ConstInt(1)),
+                else_expr: Box::new(Expression::Ternary {
+                    condition: Box::new(Expression::Local("b".to_string())),
+                    then_expr: Box::new(Expression::ConstInt(2)),
+                    else_expr: Box::new(Expression::ConstInt(3)),
+                }),
             }))],
         );
     }
