@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/betterpilot-cli",
+    "crates/betterpilot-core",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = ""
+
+[workspace.dependencies]
+betterpilot-core = { path = "crates/betterpilot-core" }
+clap = { version = "4.5.53", features = ["derive"] }
+thiserror = "2.0.17"
+zip = { version = "2", default-features = false, features = ["deflate"] }

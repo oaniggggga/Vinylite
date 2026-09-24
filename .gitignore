@@ -1,0 +1,22 @@
+﻿# Rust
+/target/
+**/*.rs.bk
+
+# Build artifacts and binaries
+betterpilot
+betterpilot.exe
+*.pdb
+
+# Test output and scratch
+tmp_out/
+*_decompiled/
+*.out.java
+
+# Large local fixtures (proprietary material - never publish)
+client-decrypted.jar
+Xenon.java
+Xenon.class
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
