@@ -218,7 +218,8 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
 
             let class_name = deobfuscate_name(&inferred_name);
             format!(
-                "public class {} {{\n    // unrecoverable class bytes, fallback rendering only\n}}",
+                "{}\npublic class {} {{\n    // unrecoverable class bytes, fallback rendering only\n}}",
+                vinylite_core::watermark(),
                 class_name
             )
         } else {

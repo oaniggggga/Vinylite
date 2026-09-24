@@ -22,6 +22,14 @@ pub use diagnostic::{Diagnostic, Severity};
 pub use jar::{JarEntry, deobfuscate_name, parse_jar};
 pub use recovery::Recoverable;
 
+/// First line emitted at the top of every decompiled file.
+pub fn watermark() -> String {
+    format!(
+        "// Decompiled by Vinylite v{} (https://github.com/oaniggggga/vinylite)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct DecompileReport {
     pub class: Option<ClassFile>,

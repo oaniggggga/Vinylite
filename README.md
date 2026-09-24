@@ -57,7 +57,7 @@ cargo install --git https://github.com/oaniggggga/vinylite
 Input bytecode of a trivial loop with an if/else inside (from `javac`):
 
 ```java
-// vinylite output
+// Decompiled by Vinylite v0.1.0 (https://github.com/oaniggggga/vinylite)
 public class SimpleTest {
     public static void main(String[] arg0) {
         StringBuilder var_1 = new StringBuilder();

@@ -198,6 +198,9 @@ impl ClassDecl {
     pub fn render(&self) -> String {
         let mut out = String::new();
 
+        out.push_str(&crate::watermark());
+        out.push('\n');
+
         // Package
         if let Some(pkg) = &self.package {
             out.push_str("package ");
@@ -953,6 +956,28 @@ fn is_enum_synthetic_method(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_starts_with_watermark() {
+        let class = ClassDecl {
+            name: "Example".to_string(),
+            package: None,
+            imports: vec![],
+            fields: vec![],
+            methods: vec![],
+            access_flags: 0x0001,
+            super_name: None,
+            is_enum: false,
+            enum_constants: vec![],
+        };
+        let rendered = class.render();
+        let first = rendered.lines().next().unwrap_or_default();
+        assert!(
+            first.starts_with("// Decompiled by Vinylite v"),
+            "watermark missing: {first:?}"
+        );
+        assert!(first.contains("github.com/oaniggggga/vinylite"));
+    }
 
     #[test]
     fn renders_simple_class() {
