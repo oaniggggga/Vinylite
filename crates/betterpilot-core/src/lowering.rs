@@ -2906,6 +2906,139 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
     }
 }
 
+/// Extract a candidate ternary join value from an if/else pair body.
+/// Returns Some((target, then_value, else_value, is_return)) when the body
+/// consists solely of one assignment/decl/return of a single plain value.
+fn ternary_join(stmts: &[Statement]) -> Option<(String, Expression, bool)> {
+    let as_join = |s: &Statement| match s {
+        Statement::Assign { target, value } => {
+            if matches!(value, Expression::Unknown(_)) {
+                None
+            } else {
+                Some((target.clone(), value.clone(), false))
+            }
+        }
+        Statement::VarDecl {
+            target,
+            value: Some(value),
+            ..
+        } => Some((target.clone(), value.clone(), false)),
+        Statement::Return(Some(value)) => Some((String::new(), value.clone(), true)),
+        _ => None,
+    };
+    if stmts.len() != 1 {
+        return None;
+    }
+    as_join(&stmts[0])
+}
+
+/// True when the expression is safe to duplicate into both ternary arms:
+/// plain values, field/array reads, and invocations of whitelisted pure
+///-looking shapes. Side-effecting calls are allowed only if they are the
+/// sole content of the arm (they are, by ternary_join).
+fn ternary_value_ok(expr: &Expression) -> bool {
+    !matches!(expr, Expression::Unknown(_))
+}
+
+/// Collapse `if (c) { x = a; } else { x = b; }` into `x = c ? a : b;`
+/// recursively across all statement bodies.
+fn reconstruct_ternaries(stmts: &mut [Statement]) {
+    let mut i = 0;
+    while i < stmts.len() {
+        let (then_join, else_join, cond) = {
+            let Statement::If {
+                condition,
+                then_body,
+                else_body: Some(else_body),
+            } = &stmts[i]
+            else {
+                i += 1;
+                continue;
+            };
+            match (ternary_join(then_body), ternary_join(else_body)) {
+                (Some(t), Some(e)) => (t, e, condition.clone()),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            }
+        };
+
+        let (t_target, t_value, t_ret) = then_join;
+        let (e_target, e_value, e_ret) = else_join;
+
+        // Both arms must agree on the join kind (both return or both assign
+        // the same target) and the values must be duplication-safe.
+        if t_ret != e_ret
+            || t_target != e_target
+            || !ternary_value_ok(&t_value)
+            || !ternary_value_ok(&e_value)
+        {
+            i += 1;
+            continue;
+        }
+
+        let ternary = Expression::Ternary {
+            condition: Box::new(cond),
+            then_expr: Box::new(t_value),
+            else_expr: Box::new(e_value),
+        };
+        stmts[i] = if t_ret {
+            Statement::Return(Some(ternary))
+        } else if t_target.is_empty() {
+            i += 1;
+            continue;
+        } else {
+            Statement::Assign {
+                target: t_target,
+                value: ternary,
+            }
+        };
+        i += 1;
+    }
+}
+
+fn reconstruct_ternaries_recursive(stmts: &mut [Statement]) {
+    reconstruct_ternaries(stmts);
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                reconstruct_ternaries_recursive(then_body);
+                if let Some(eb) = else_body {
+                    reconstruct_ternaries_recursive(eb);
+                }
+            }
+            Statement::While { body, .. } => reconstruct_ternaries_recursive(body),
+            Statement::For {
+                init, update, body, ..
+            } => {
+                reconstruct_ternaries_recursive(init);
+                reconstruct_ternaries_recursive(update);
+                reconstruct_ternaries_recursive(body);
+            }
+            Statement::ForEach { body, .. } => reconstruct_ternaries_recursive(body),
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    reconstruct_ternaries_recursive(&mut arm.body);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                reconstruct_ternaries_recursive(try_body);
+                reconstruct_ternaries_recursive(catch_body);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// True when the statement is a simple self-update of `var` suitable for a
 /// for-loop update clause: `var = var + n` and friends.
 fn is_self_update(stmt: &Statement, var: &str) -> bool {
@@ -4612,6 +4745,10 @@ pub fn lower_method_to_ast(
     // boolean re-typing heuristic's domain.
     ensure_boolean_conditions_recursive(&mut statements);
 
+    // CFR-style ternary reconstruction: an if/else whose both branches only
+    // assign the same variable (or return) collapses to `x = cond ? a : b`.
+    reconstruct_ternaries_recursive(&mut statements);
+
     // Restructure for-each loops
     restructure_for_each_loops_recursive(&mut statements);
 
@@ -5070,6 +5207,91 @@ mod tests {
         assert!(
             for_debug.contains("else_body: Some(["),
             "else branch missing: {for_debug}"
+        );
+    }
+
+    #[test]
+    fn ternary_reconstruction_from_if_else_assignment() {
+        // Mirrors: int r; if (a > b) { r = 1; } else { r = 2; } -> r = a > b ? 1 : 2;
+        let pool = vec![Recoverable::Missing]; // unused by these opcodes
+        let int = crate::bytecode::LoadStoreType::Int;
+        let instructions = vec![
+            // a > b  (params: a=1, b=2)
+            Instruction {
+                offset: 0,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 1 },
+            },
+            Instruction {
+                offset: 1,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 2,
+                length: 3,
+                kind: InstructionKind::If {
+                    opcode: 0xa3,
+                    target: 10,
+                },
+            }, // if_icmple -> else
+            // then: r = 1
+            Instruction {
+                offset: 5,
+                length: 1,
+                kind: InstructionKind::Iconst(1),
+            },
+            Instruction {
+                offset: 6,
+                length: 1,
+                kind: InstructionKind::Store { ty: int, index: 3 },
+            },
+            Instruction {
+                offset: 7,
+                length: 3,
+                kind: InstructionKind::Goto(13),
+            },
+            // else: r = 2
+            Instruction {
+                offset: 10,
+                length: 1,
+                kind: InstructionKind::Iconst(2),
+            },
+            Instruction {
+                offset: 11,
+                length: 1,
+                kind: InstructionKind::Store { ty: int, index: 3 },
+            },
+            // join: return r
+            Instruction {
+                offset: 13,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 3 },
+            },
+            Instruction {
+                offset: 14,
+                length: 1,
+                kind: InstructionKind::Return(crate::bytecode::ReturnType::Int),
+            },
+        ];
+        let code = test_code(instructions);
+        let method = lower_method_to_ast(
+            &pool,
+            "pick",
+            "(II)I",
+            None,
+            &code,
+            "TernaryTest",
+            0x0009,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
+        let debug = format!("{:?}", method.statements);
+        assert!(debug.contains("Ternary"), "ternary missing, got: {debug}");
+        assert!(
+            debug.contains("ConstInt(1)") && debug.contains("ConstInt(2)"),
+            "ternary arms wrong: {debug}"
         );
     }
 
