@@ -1597,7 +1597,7 @@ fn fold_switches(
             continue;
         }
         if let Some(built) = build_switch_node(result, pos, stub, if_targets, switches) {
-            if std::env::var("BETTERPILOT_DEBUG_SWITCH").is_ok() {
+            if std::env::var("VINYLITE_DEBUG_SWITCH").is_ok() {
                 eprintln!(
                     "[switch] stub@{} pos={} arms={} consumed_through={} len={}",
                     stub.offset,
@@ -1795,7 +1795,7 @@ fn build_switch_node(
     let mut arm_broke_to: Vec<Option<usize>> = Vec::new();
     let mut arm_has_loop: Vec<bool> = Vec::new();
     let mut consumed_through = pos + 1;
-    let debug = std::env::var("BETTERPILOT_DEBUG_SWITCH").is_ok();
+    let debug = std::env::var("VINYLITE_DEBUG_SWITCH").is_ok();
     for (n, b) in bounds.iter().enumerate() {
         let is_last = n + 1 == bounds.len();
         let is_default = default_off == Some(*b);
@@ -1956,7 +1956,7 @@ fn try_distribute_join_values(
         After { index: usize },
         Absorbed { arm: usize, stmt_index: usize },
     }
-    let dist_debug = std::env::var("BETTERPILOT_DEBUG_SWITCH").is_ok();
+    let dist_debug = std::env::var("VINYLITE_DEBUG_SWITCH").is_ok();
     let mut join_site: Option<JoinSite> = None;
     if let Some((_, join_stmt)) = result.get(consumed_through)
         && matches!(
