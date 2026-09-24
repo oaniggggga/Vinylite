@@ -42,6 +42,26 @@ fn simple_test_class_decompiles_to_expected_source() {
 }
 
 #[test]
+fn try_patterns_render_structurally() {
+    // Try/catch contract: an exception table entry must produce a visible
+    // try/catch, multi-catch merges same-handler entries, and the catch
+    // body is not silently dropped after a return in the try body.
+    let bytes = fixture("TryPatterns.class");
+    let source = decompile_class(&bytes);
+    for anchor in [
+        "try {",
+        "} catch (NumberFormatException e)",
+        "IllegalStateException | NumberFormatException e",
+        "} catch (IllegalArgumentException e)",
+    ] {
+        assert!(source.contains(anchor), "missing: {anchor}\n{source}");
+    }
+    // The un-droppable invariant: catch bodies survive.
+    assert!(source.contains("return -1;"), "catch body lost\n{source}");
+    assert!(source.contains("return 0;"), "multi-catch body lost\n{source}");
+}
+
+#[test]
 fn truncated_classfile_still_renders_recovery_stub() {
     // Recovery-first contract: garbage input must not panic or hang.
     let bytes = fixture("SimpleTest.class");

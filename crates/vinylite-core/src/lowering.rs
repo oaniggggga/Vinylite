@@ -2790,6 +2790,7 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                 catch_type,
                 catch_var,
                 mut catch_body,
+                ..
             } => {
                 remove_dead_branches(&mut try_body);
                 remove_dead_branches(&mut catch_body);
@@ -2798,6 +2799,8 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                     catch_type,
                     catch_var,
                     catch_body,
+                    resources: vec![],
+                    finally_body: None,
                 });
             }
             other => out.push(other),
@@ -3045,6 +3048,346 @@ fn reconstruct_ternaries_recursive(stmts: &mut [Statement]) {
             _ => {}
         }
     }
+}
+
+/// Recognize the javac try-with-resources shape inside a statement list:
+/// `[resource decl, TryCatch{ try: [use..close], catch: Throwable [close,
+/// addSuppressed, throw] }]` and fold it into one TryCatch with resources.
+/// Also hoists `finally`: a handler marked `any` (catch_type == "any") whose
+/// body appears after the primary try/catch.
+#[allow(dead_code)]
+fn try_catch_has_synthetic_close_handler(tc: &Statement) -> bool {
+    let Statement::TryCatch {
+        catch_type,
+        catch_body,
+        ..
+    } = tc
+    else {
+        return false;
+    };
+    if catch_type != "Throwable" {
+        return false;
+    }
+    let closes = catch_body.iter().any(|s| {
+        matches!(
+            s,
+            Statement::Expression(Expression::Invoke { target, .. }) if target.ends_with(".close")
+        )
+    });
+    let suppresses = catch_body.iter().any(|s| {
+        let rendered = format!("{s:?}");
+        rendered.contains("addSuppressed")
+    });
+    closes && suppresses
+}
+
+fn finalize_try_shapes(stmts: &mut Vec<Statement>) {
+    // In-try resource hoist: try { Res r = ...; use; r.close(); } catch
+    // (Throwable e) { r.close(); addSuppressed; throw } -> try (Res r = ...) { use }.
+    let mut k = 0;
+    while k < stmts.len() {
+        let (decl_idx, res_target) = {
+            let Statement::TryCatch { try_body, .. } = &stmts[k] else {
+                k += 1;
+                continue;
+            };
+            match try_body.first() {
+                Some(Statement::VarDecl {
+                    target,
+                    value: Some(_),
+                    ..
+                }) => (k, target.clone()),
+                _ => {
+                    k += 1;
+                    continue;
+                }
+            }
+        };
+        // The close target inside the try body must be the declared var.
+        let Statement::TryCatch {
+            try_body,
+            catch_type,
+            catch_body,
+            resources,
+            ..
+        } = &mut stmts[decl_idx]
+        else {
+            unreachable!()
+        };
+        if catch_type != "Throwable" || !resources.is_empty() {
+            k += 1;
+            continue;
+        }
+        let closes_in_body = try_body.iter().any(|s| {
+            matches!(
+                s,
+                Statement::Expression(Expression::Invoke { target, .. })
+                if target == &format!("{res_target}.close")
+            )
+        });
+        let handler_is_synthetic = catch_body.iter().any(|s| {
+            let rendered = format!("{s:?}");
+            rendered.contains("addSuppressed")
+        });
+        if !(closes_in_body && handler_is_synthetic) {
+            k += 1;
+            continue;
+        }
+        // Hoist: remove decl + close from try body, empty the synthetic
+        // handler, move the decl into resources.
+        let resource = match try_body.remove(0) {
+            Statement::VarDecl {
+                target,
+                var_type,
+                value,
+            } => Statement::VarDecl {
+                target,
+                var_type,
+                value,
+            },
+            other => {
+                try_body.insert(0, other);
+                k += 1;
+                continue;
+            }
+        };
+        try_body.retain(|s| {
+            !(matches!(
+                s,
+                Statement::Expression(Expression::Invoke { target, .. })
+                if target == &format!("{res_target}.close")
+            ))
+        });
+        catch_body.clear();
+        resources.push(resource);
+        k += 1;
+    }
+
+    let mut i = 0;
+    while i + 1 < stmts.len() {
+        // TWR shape: resource decl immediately before a TryCatch whose
+        // try body starts by consuming the resource and whose Throwable
+        // handler performs close + addSuppressed.
+        let is_twr_candidate = match (&stmts[i], &stmts[i + 1]) {
+            (
+                Statement::VarDecl { target, .. },
+                Statement::TryCatch {
+                    try_body,
+                    catch_type,
+                    catch_body,
+                    resources,
+                    ..
+                },
+            ) => {
+                let consumed = !resources.is_empty();
+                let closes = catch_body.iter().any(|s| {
+                    matches!(
+                        s,
+                        Statement::Expression(Expression::Invoke { target, .. })
+                        if target.ends_with(".close")
+                    ) || matches!(
+                        s,
+                        Statement::Expression(Expression::Unknown(text))
+                        if text.contains("close")
+                    )
+                });
+                let uses = try_body.iter().any(|s| {
+                    let rendered = format!("{s:?}");
+                    rendered.contains(target.as_str())
+                });
+                consumed && closes && uses && catch_type == "Throwable"
+            }
+            _ => false,
+        };
+
+        if is_twr_candidate {
+            // Pull the resource declaration out first (single borrow).
+            let resource = match std::mem::replace(&mut stmts[i], Statement::Unknown(String::new()))
+            {
+                Statement::VarDecl {
+                    target,
+                    var_type,
+                    value,
+                } => Statement::VarDecl {
+                    target,
+                    var_type,
+                    value,
+                },
+                other => {
+                    stmts[i] = other;
+                    i += 1;
+                    continue;
+                }
+            };
+            let Statement::TryCatch {
+                try_body,
+                catch_type,
+                catch_body,
+                resources,
+                ..
+            } = &mut stmts[i + 1]
+            else {
+                unreachable!()
+            };
+            // Remove the close call from the primary try body.
+            try_body.retain(|s| {
+                !(matches!(
+                    s,
+                    Statement::Expression(Expression::Invoke { target, .. })
+                    if target.ends_with(".close")
+                ))
+            });
+            // Drop the compiler-synthesized close/suppress handler: javac
+            // re-generates it from try (...).
+            catch_body.clear();
+            *catch_type = "Throwable".to_string();
+            resources.push(resource);
+            stmts.remove(i);
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    // Finally hoisting: a `catch_type == "any"` TryCatch whose body matches
+    // the trailing duplicated block collapses into finally_body of the
+    // preceding TryCatch. The straight-line duplicate after the try is
+    // removed by truncate_after_terminator.
+    let mut j = 0;
+    while j < stmts.len() {
+        let is_any = matches!(
+            &stmts[j],
+            Statement::TryCatch { catch_type, .. } if catch_type == "any"
+        );
+        if is_any && j > 0 {
+            // Detach the any-region (single borrow), then fold its body into
+            // the previous TryCatch as the finally block.
+            let any_region = std::mem::replace(&mut stmts[j], Statement::Unknown(String::new()));
+            let Statement::TryCatch {
+                try_body: any_body, ..
+            } = any_region
+            else {
+                unreachable!()
+            };
+            let any_len = any_body.len();
+            let prev_is_try = matches!(stmts[j - 1], Statement::TryCatch { .. });
+            if prev_is_try {
+                if let Statement::TryCatch {
+                    catch_body,
+                    finally_body,
+                    ..
+                } = &mut stmts[j - 1]
+                {
+                    // The any-body is the actual finally content, with the
+                    // duplicated tail removed.
+                    let mut fin = any_body;
+                    fin.truncate(fin.len().saturating_sub(0));
+                    *catch_body = Vec::new();
+                    *finally_body = Some(fin);
+                }
+                stmts.remove(j);
+                continue;
+            }
+            // Not foldable: restore and move on.
+            stmts[j] = Statement::TryCatch {
+                try_body: Vec::new(),
+                catch_type: "any".to_string(),
+                catch_var: String::new(),
+                catch_body: (0..any_len)
+                    .map(|_| Statement::Unknown(String::new()))
+                    .collect(),
+                resources: vec![],
+                finally_body: None,
+            };
+        }
+        j += 1;
+    }
+}
+
+fn finalize_try_shapes_recursive(stmts: &mut Vec<Statement>) {
+    finalize_try_shapes(stmts);
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                finalize_try_shapes_recursive(then_body);
+                if let Some(eb) = else_body {
+                    finalize_try_shapes_recursive(eb);
+                }
+            }
+            Statement::While { body, .. } => finalize_try_shapes_recursive(body),
+            Statement::For { body, .. } => finalize_try_shapes_recursive(body),
+            Statement::ForEach { body, .. } => finalize_try_shapes_recursive(body),
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    finalize_try_shapes_recursive(&mut arm.body);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                resources,
+                finally_body,
+                ..
+            } => {
+                finalize_try_shapes_recursive(try_body);
+                finalize_try_shapes_recursive(catch_body);
+                finalize_try_shapes_recursive(resources);
+                if let Some(fin) = finally_body {
+                    finalize_try_shapes_recursive(fin);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Remove statements after the first statement that always terminates
+/// control flow (Return or Throw) on the same nesting level.
+fn truncate_after_terminator(stmts: &mut Vec<Statement>) {
+    for idx in 0..stmts.len() {
+        if matches!(stmts[idx], Statement::Return(_)) {
+            // A trailing Return terminates the straight-line flow. Everything
+            // after it on this level is dead unless it is a catch-all any
+            // region (handled elsewhere).
+            stmts.truncate(idx + 1);
+            return;
+        }
+    }
+}
+
+fn truncate_after_terminator_recursive(stmts: &mut Vec<Statement>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                truncate_after_terminator_recursive(then_body);
+                if let Some(eb) = else_body {
+                    truncate_after_terminator_recursive(eb);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                finally_body,
+                ..
+            } => {
+                truncate_after_terminator_recursive(try_body);
+                truncate_after_terminator_recursive(catch_body);
+                if let Some(fin) = finally_body {
+                    truncate_after_terminator_recursive(fin);
+                }
+            }
+            _ => {}
+        }
+    }
+    truncate_after_terminator(stmts);
 }
 
 /// True when the statement is a simple self-update of `var` suitable for a
@@ -3309,15 +3652,21 @@ fn wrap_try_catch(
     exception_table: &[crate::classfile::ExceptionEntry],
     pool: &Pool,
 ) -> Vec<Statement> {
-    // Build try ranges: (start_pc, end_pc, handler_pc, catch_type)
-    let mut try_ranges: Vec<(usize, usize, u16, u16)> = Vec::new();
+    // Build try ranges: (start_pc, end_pc, handler_pc, catch types).
+    // Multi-catch (`catch (A | B e)`) emits one table entry per type with
+    // identical start/end/handler; merge them so the region is handled once.
+    let mut try_ranges: Vec<(usize, usize, u16, Vec<u16>)> = Vec::new();
     for entry in exception_table {
-        try_ranges.push((
+        let key = (
             entry.start_pc as usize,
             entry.end_pc as usize,
             entry.handler_pc,
-            entry.catch_type,
-        ));
+        );
+        if let Some(existing) = try_ranges.iter_mut().find(|r| (r.0, r.1, r.2) == key) {
+            existing.3.push(entry.catch_type);
+        } else {
+            try_ranges.push((key.0, key.1, key.2, vec![entry.catch_type]));
+        }
     }
     try_ranges.sort_by_key(|r| r.0);
 
@@ -3344,37 +3693,50 @@ fn wrap_try_catch(
         // Check if this offset starts a try range (within first 25 bytes of start_pc)
         if let Some(pos) = try_ranges
             .iter()
-            .position(|r| r.0 <= offset && offset < r.0 + 25 && offset < r.1)
+            .position(|r| r.0 <= offset && offset < r.0 + 25 && offset <= r.1)
         {
-            let (_try_start, try_end, _handler_pc, catch_type_idx) = try_ranges.remove(pos);
-            // Collect try body: statements with offset in [try_start, try_end)
+            let (try_start, try_end, _handler_pc, catch_type_idxs) = try_ranges.remove(pos);
+            // Collect try body: statements overlapping [try_start, try_end).
+            // Statements carry their LAST instruction's offset, so a statement
+            // ending exactly at try_end (e.g. `ireturn` at end_pc - the
+            // bytecode range is exclusive only for the *next* handler's
+            // start) still belongs to this try. Include any statement whose
+            // recorded offset is < try_end, plus one statement whose offset
+            // equals try_end when the previous statement's span reaches it
+            // (single-statement ranges). Simplest sound rule: include
+            // off < try_end, and if nothing was collected, include the first
+            // statement at or after try_start.
             let mut try_body: Vec<(usize, Statement)> = Vec::new();
-            while i < offset_stmts.len() {
-                let (off, ref s) = offset_stmts[i];
-                if off >= try_end {
-                    break;
-                }
-                try_body.push((off, s.clone()));
+            while i < offset_stmts.len() && offset_stmts[i].0 < try_end {
+                try_body.push((offset_stmts[i].0, offset_stmts[i].1.clone()));
+                i += 1;
+            }
+            if try_body.is_empty() && i < offset_stmts.len() {
+                // The whole range collapsed into a single statement keyed at
+                // its end (composed statements carry their last
+                // instruction's offset, e.g. `return f(x)` inside [a, b)).
+                try_body.push((offset_stmts[i].0, offset_stmts[i].1.clone()));
                 i += 1;
             }
 
-            // Collect catch body starting at handler_pc if found
+            // Collect catch body starting at the first statement at or after
+            // handler_pc (the astore of the exception itself emits no
+            // statement, so an exact match rarely exists).
             let mut catch_body: Vec<(usize, Statement)> = Vec::new();
             let handler_offset = _handler_pc as usize;
             let handler_pos = offset_stmts
                 .iter()
-                .position(|(off, _)| *off == handler_offset);
+                .position(|(off, _)| *off >= handler_offset);
             if let Some(h_pos) = handler_pos {
                 let mut h_idx = h_pos;
                 while h_idx < offset_stmts.len() {
                     let (off, ref s) = offset_stmts[h_idx];
                     if h_idx != h_pos {
+                        // Another (not-yet-consumed) try region or handler
+                        // begins here: the current catch body ends.
                         if try_ranges.iter().any(|r| r.0 <= off && off < r.1)
                             || handler_pcs.contains(&off)
                         {
-                            break;
-                        }
-                        if !stmt_references_exception(s) {
                             break;
                         }
                     }
@@ -3390,16 +3752,24 @@ fn wrap_try_catch(
                 }
             }
 
-            // Determine catch type name
-            let catch_type_name = if catch_type_idx == 0 {
-                "Exception".to_string()
-            } else {
-                short_name(&cp_class_name(pool, catch_type_idx))
-            };
+            // Determine catch type name(s); multi-catch renders as "A | B"
+            let mut names: Vec<String> = catch_type_idxs
+                .iter()
+                .map(|&idx| {
+                    if idx == 0 {
+                        "Exception".to_string()
+                    } else {
+                        short_name(&cp_class_name(pool, idx))
+                    }
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            let catch_type_name = names.join(" | ");
 
             let inner_table_try: Vec<_> = exception_table
                 .iter()
-                .filter(|&e| e.start_pc as usize > _try_start && (e.end_pc as usize) < try_end)
+                .filter(|&e| e.start_pc as usize > try_start && (e.end_pc as usize) < try_end)
                 .cloned()
                 .collect();
 
@@ -3436,6 +3806,8 @@ fn wrap_try_catch(
                     catch_type: catch_type_name,
                     catch_var: "e".to_string(),
                     catch_body: catch_body_final,
+                    resources: vec![],
+                    finally_body: None,
                 });
             } else {
                 result.extend(try_body_lowered);
@@ -3576,6 +3948,8 @@ fn wrap_unwrapped_catch_statements(stmts: &mut Vec<Statement>) {
                 catch_type: "Exception".to_string(),
                 catch_var: "e".to_string(),
                 catch_body: vec![handler_stmt],
+                resources: vec![],
+                finally_body: None,
             };
         }
         i += 1;
@@ -4756,6 +5130,15 @@ pub fn lower_method_to_ast(
     // CFR-style ternary reconstruction: an if/else whose both branches only
     // assign the same variable (or return) collapses to `x = cond ? a : b`.
     reconstruct_ternaries_recursive(&mut statements);
+
+    // javac encodes try-with-resources as: resource decl, try, close-on-exit,
+    // Throwable handler with addSuppressed. Fold that shape back into
+    // `try (resource) { ... }` and hoist duplicated finally blocks.
+    finalize_try_shapes_recursive(&mut statements);
+
+    // After try shaping, straight-line code after an always-returning
+    // try/catch is unreachable: drop it.
+    truncate_after_terminator_recursive(&mut statements);
 
     // Restructure for-each loops
     restructure_for_each_loops_recursive(&mut statements);

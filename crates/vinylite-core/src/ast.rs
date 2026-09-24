@@ -38,6 +38,10 @@ pub enum Statement {
         catch_type: String,
         catch_var: String,
         catch_body: Vec<Statement>,
+        /// try-with-resources declarations rendered into the header.
+        resources: Vec<Statement>,
+        /// finally block, if the method had one.
+        finally_body: Option<Vec<Statement>>,
     },
     Switch {
         discriminant: Expression,
@@ -600,20 +604,46 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
             catch_type,
             catch_var,
             catch_body,
+            resources,
+            finally_body,
         } => {
             out.push_str(&pad);
-            out.push_str("try {\n");
+            if resources.is_empty() {
+                out.push_str("try {\n");
+            } else {
+                out.push_str("try (");
+                for (n, r) in resources.iter().enumerate() {
+                    if n > 0 {
+                        out.push_str("; ");
+                    }
+                    out.push_str(render_statement_head(r).trim());
+                }
+                out.push_str(") {\n");
+            }
             for s in try_body {
                 out.push_str(&render_statement(s, indent + 1));
             }
-            out.push_str(&pad);
-            out.push_str("} catch (");
-            out.push_str(catch_type);
-            out.push(' ');
-            out.push_str(catch_var);
-            out.push_str(") {\n");
-            for s in catch_body {
-                out.push_str(&render_statement(s, indent + 1));
+            let is_twr_catch =
+                !resources.is_empty() && catch_type == "Throwable" && catch_body.is_empty();
+            let skip_catch = is_twr_catch
+                || (resources.is_empty() && (catch_type == "any" || catch_body.is_empty()));
+            if !skip_catch {
+                out.push_str(&pad);
+                out.push_str("} catch (");
+                out.push_str(catch_type);
+                out.push(' ');
+                out.push_str(catch_var);
+                out.push_str(") {\n");
+                for s in catch_body {
+                    out.push_str(&render_statement(s, indent + 1));
+                }
+            }
+            if let Some(fin) = finally_body {
+                out.push_str(&pad);
+                out.push_str("} finally {\n");
+                for s in fin {
+                    out.push_str(&render_statement(s, indent + 1));
+                }
             }
             out.push_str(&pad);
             out.push_str("}\n");
