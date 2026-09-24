@@ -194,10 +194,14 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
         all_method_decls.push(method_decl);
     }
 
-    // Filter out lambda methods — they've been inlined
+    // Filter out lambda methods — they've been inlined — plus bridge and
+    // synthetic methods (real source never declares them; CFR/Vineflower
+    // hide them too). Filtering happens here, not earlier, because lambda
+    // bodies must still be lowered above for inlining.
+    const HIDDEN_METHOD_FLAGS: u16 = 0x0040 | 0x1000; // BRIDGE | SYNTHETIC
     let methods: Vec<_> = all_method_decls
         .into_iter()
-        .filter(|m| !m.name.starts_with("lambda$"))
+        .filter(|m| !m.name.starts_with("lambda$") && m.access_flags & HIDDEN_METHOD_FLAGS == 0)
         .collect();
 
     // Detect enum: class extends java.lang.Enum (possibly with type args)

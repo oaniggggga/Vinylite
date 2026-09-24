@@ -1181,10 +1181,18 @@ impl<'a> StackMachine<'a> {
                 ))));
             }
             InstructionKind::MonitorEnter => {
-                self.pop();
+                let lock = self.pop();
+                self.emit(Statement::Monitor {
+                    enter: true,
+                    lock: Box::new(lock),
+                });
             }
             InstructionKind::MonitorExit => {
-                self.pop();
+                let lock = self.pop();
+                self.emit(Statement::Monitor {
+                    enter: false,
+                    lock: Box::new(lock),
+                });
             }
             InstructionKind::ArrayLength => {
                 let arr = self.pop();
@@ -2552,7 +2560,7 @@ fn merge_guards_recursive(stmts: &mut Vec<Statement>) {
                     merge_guards_recursive(body);
                 }
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 merge_guards_recursive(body);
             }
             Statement::For {
@@ -2665,7 +2673,7 @@ fn remove_goto_markers(stmts: &mut Vec<Statement>) {
                 remove_goto_markers(try_body);
                 remove_goto_markers(catch_body);
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 remove_goto_markers(body);
             }
             Statement::For {
@@ -2761,6 +2769,10 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                 } else {
                     out.push(Statement::While { condition, body });
                 }
+            }
+            Statement::Synchronized { lock, mut body } => {
+                remove_dead_branches(&mut body);
+                out.push(Statement::Synchronized { lock, body });
             }
             Statement::Switch {
                 discriminant,
@@ -2880,6 +2892,9 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
             }
             Statement::While { condition, body } => {
                 ensure_boolean_condition(condition);
+                ensure_boolean_conditions_recursive(body);
+            }
+            Statement::Synchronized { body, .. } => {
                 ensure_boolean_conditions_recursive(body);
             }
             Statement::For {
@@ -3112,7 +3127,9 @@ fn reconstruct_ternaries_recursive(stmts: &mut Vec<Statement>) {
                     reconstruct_ternaries_recursive(eb);
                 }
             }
-            Statement::While { body, .. } => reconstruct_ternaries_recursive(body),
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
+                reconstruct_ternaries_recursive(body)
+            }
             Statement::For {
                 init, update, body, ..
             } => {
@@ -3647,7 +3664,9 @@ fn finalize_try_shapes_recursive(stmts: &mut Vec<Statement>) {
                     finalize_try_shapes_recursive(eb);
                 }
             }
-            Statement::While { body, .. } => finalize_try_shapes_recursive(body),
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
+                finalize_try_shapes_recursive(body)
+            }
             Statement::For { body, .. } => finalize_try_shapes_recursive(body),
             Statement::ForEach { body, .. } => finalize_try_shapes_recursive(body),
             Statement::Switch { arms, .. } => {
@@ -3712,6 +3731,9 @@ fn truncate_after_terminator_recursive(stmts: &mut Vec<Statement>) {
                 if let Some(fin) = finally_body {
                     truncate_after_terminator_recursive(fin);
                 }
+            }
+            Statement::Synchronized { body, .. } => {
+                truncate_after_terminator_recursive(body);
             }
             _ => {}
         }
@@ -3855,7 +3877,9 @@ fn count_direct_assigns(stmt: &Statement, var: &str, found: &mut bool) {
                 }
             }
         }
-        Statement::While { body, .. } | Statement::ForEach { body, .. } => {
+        Statement::While { body, .. }
+        | Statement::Synchronized { body, .. }
+        | Statement::ForEach { body, .. } => {
             for s in body {
                 count_direct_assigns(s, var, found);
             }
@@ -3901,7 +3925,9 @@ fn desugar_counted_loops_recursive(stmts: &mut Vec<Statement>) {
                     desugar_counted_loops_recursive(eb);
                 }
             }
-            Statement::While { body, .. } => desugar_counted_loops_recursive(body),
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
+                desugar_counted_loops_recursive(body)
+            }
             Statement::For { body, .. } => desugar_counted_loops_recursive(body),
             Statement::ForEach { body, .. } => desugar_counted_loops_recursive(body),
             Statement::Switch { arms, .. } => {
@@ -3948,7 +3974,7 @@ fn remove_empty_if_blocks(stmts: &mut Vec<Statement>) {
                 remove_empty_if_blocks(try_body);
                 remove_empty_if_blocks(catch_body);
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 remove_empty_if_blocks(body);
             }
             Statement::For {
@@ -3975,6 +4001,73 @@ fn remove_empty_if_blocks(stmts: &mut Vec<Statement>) {
 }
 
 // Try/catch reconstruction from exception table
+
+/// Pair monitorenter/monitorexit markers into `Synchronized` blocks.
+///
+/// Runs on structured statements: within one statement list, enters and
+/// exits nest like parens (javac emits one normal-path exit per enter).
+/// An exit with no matching enter at its level is the exceptional-path
+/// release living in a catch handler — dropped, the `Synchronized` node
+/// subsumes it. Unmatched enters (broken input) degrade the same way:
+/// the marker goes, the body stays. Recursion first, so nesting folds
+/// bottom-up.
+fn fold_synchronized_recursive(stmts: &mut Vec<Statement>) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                fold_synchronized_recursive(then_body);
+                if let Some(eb) = else_body {
+                    fold_synchronized_recursive(eb);
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::Synchronized { body, .. }
+            | Statement::ForEach { body, .. } => fold_synchronized_recursive(body),
+            Statement::For { body, .. } => fold_synchronized_recursive(body),
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    fold_synchronized_recursive(&mut arm.body);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
+                fold_synchronized_recursive(try_body);
+                fold_synchronized_recursive(catch_body);
+            }
+            _ => {}
+        }
+    }
+
+    let mut stack: Vec<(usize, Expression)> = Vec::new();
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    for stmt in stmts.drain(..) {
+        match stmt {
+            Statement::Monitor { enter: true, lock } => {
+                stack.push((out.len(), *lock));
+            }
+            Statement::Monitor { enter: false, .. } => {
+                if let Some((start, lock)) = stack.pop() {
+                    let body: Vec<Statement> = out.drain(start..).collect();
+                    out.push(Statement::Synchronized {
+                        lock: Box::new(lock),
+                        body,
+                    });
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    // Unmatched enters were never pushed to `out` — only their markers are
+    // gone, bodies stay exactly as before. Nothing left to do.
+    *stmts = out;
+}
 
 fn wrap_try_catch(
     offset_stmts: Vec<(usize, Statement)>,
@@ -4231,7 +4324,7 @@ fn wrap_unwrapped_catch_statements(stmts: &mut Vec<Statement>) {
                     wrap_unwrapped_catch_statements(eb);
                 }
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 wrap_unwrapped_catch_statements(body);
             }
             Statement::For {
@@ -4483,6 +4576,9 @@ fn simplify_conditions_recursive(stmts: &mut [Statement]) {
                 simplify_condition_fixpoint(condition);
                 simplify_conditions_recursive(body);
             }
+            Statement::Synchronized { body, .. } => {
+                simplify_conditions_recursive(body);
+            }
             Statement::For {
                 init,
                 update,
@@ -4572,6 +4668,9 @@ fn collect_bare_condition_names(stmts: &[Statement], out: &mut std::collections:
                 collect_bare_names_in_expr(condition, out);
                 collect_bare_condition_names(body, out);
             }
+            Statement::Synchronized { body, .. } => {
+                collect_bare_condition_names(body, out);
+            }
             Statement::For {
                 init,
                 update,
@@ -4654,7 +4753,7 @@ fn apply_types_recursive(
                     apply_types_recursive(eb, name_types, bare_conditions);
                 }
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 apply_types_recursive(body, name_types, bare_conditions);
             }
             Statement::For {
@@ -4771,6 +4870,9 @@ fn rename_var_in_stmts(stmts: &mut [Statement], old_name: &str, new_name: &str) 
             }
             Statement::While { condition, body } => {
                 rename_var_in_expr(condition, old_name, new_name);
+                rename_var_in_stmts(body, old_name, new_name);
+            }
+            Statement::Synchronized { body, .. } => {
                 rename_var_in_stmts(body, old_name, new_name);
             }
             Statement::For {
@@ -4918,7 +5020,7 @@ fn convert_assigns_to_var_decls_recursive(
                         convert_assigns_to_var_decls_recursive(else_b, declared_vars);
                     }
                 }
-                Statement::While { body, .. } => {
+                Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                     convert_assigns_to_var_decls_recursive(body, declared_vars);
                 }
                 Statement::For {
@@ -5027,6 +5129,9 @@ fn collect_locals_in_stmts(stmts: &[Statement], locals: &mut Vec<String>) {
                 collect_locals_in_expr(condition, locals);
                 collect_locals_in_stmts(body, locals);
             }
+            Statement::Synchronized { body, .. } => {
+                collect_locals_in_stmts(body, locals);
+            }
             Statement::For {
                 init,
                 update,
@@ -5113,7 +5218,7 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
                     restructure_for_each_loops_recursive(eb);
                 }
             }
-            Statement::While { body, .. } => {
+            Statement::While { body, .. } | Statement::Synchronized { body, .. } => {
                 restructure_for_each_loops_recursive(body);
             }
             Statement::Switch { arms, .. } => {
@@ -5434,6 +5539,10 @@ pub fn lower_method_to_ast(
     } else {
         restructured.into_iter().map(|(_, s)| s).collect()
     };
+
+    // Pair monitorenter/monitorexit into synchronized blocks before any
+    // shape-matching pass sees the marker statements as body noise.
+    fold_synchronized_recursive(&mut statements);
 
     // Merge guard clauses (including inside while/if/try-catch bodies)
     merge_guards_recursive(&mut statements);
@@ -7066,6 +7175,51 @@ mod tests {
             }
             other => panic!("expected element store, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn synchronized_markers_fold_and_strays_drop() {
+        let lock = || Expression::Local("obj".to_string());
+        let enter = || Statement::Monitor {
+            enter: true,
+            lock: Box::new(lock()),
+        };
+        let exit = || Statement::Monitor {
+            enter: false,
+            lock: Box::new(lock()),
+        };
+        // Stray exceptional-path exit first, matched pair, unmatched enter.
+        let mut stmts = vec![
+            exit(),
+            enter(),
+            Statement::Assign {
+                target: "x".to_string(),
+                value: Expression::ConstInt(1),
+            },
+            exit(),
+            enter(),
+            Statement::Assign {
+                target: "y".to_string(),
+                value: Expression::ConstInt(2),
+            },
+        ];
+        fold_synchronized_recursive(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![
+                Statement::Synchronized {
+                    lock: Box::new(lock()),
+                    body: vec![Statement::Assign {
+                        target: "x".to_string(),
+                        value: Expression::ConstInt(1),
+                    }],
+                },
+                Statement::Assign {
+                    target: "y".to_string(),
+                    value: Expression::ConstInt(2),
+                },
+            ],
+        );
     }
 
     #[test]

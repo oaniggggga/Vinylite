@@ -43,6 +43,18 @@ pub enum Statement {
         /// finally block, if the method had one.
         finally_body: Option<Vec<Statement>>,
     },
+    Synchronized {
+        lock: Box<Expression>,
+        body: Vec<Statement>,
+    },
+    /// Internal monitorenter/monitorexit marker. The fold pass
+    /// (`fold_synchronized`) pairs them into `Synchronized` nodes and drops
+    /// leftovers; a surviving marker renders as a comment so output stays
+    /// valid Java even on adversarial input.
+    Monitor {
+        enter: bool,
+        lock: Box<Expression>,
+    },
     Switch {
         discriminant: Expression,
         arms: Vec<SwitchArm>,
@@ -261,6 +273,12 @@ impl ClassDecl {
             if field.access_flags & 0x0010 != 0 {
                 body.push_str("final ");
             }
+            if field.access_flags & 0x0040 != 0 {
+                body.push_str("volatile ");
+            }
+            if field.access_flags & 0x0080 != 0 {
+                body.push_str("transient ");
+            }
             body.push_str(&short_type(&field.field_type));
             body.push(' ');
             body.push_str(&field.name);
@@ -328,14 +346,24 @@ fn render_method(method: &MethodDecl) -> String {
     if method.access_flags & 0x0008 != 0 && !is_clinit {
         out.push_str("static ");
     }
-    if method.access_flags & 0x0040 != 0 {
+    // JVMS method flags (NOT field flags: 0x0040 is bridge here, not
+    // volatile; 0x1000 is synthetic, not final; abstract is 0x0400).
+    let is_abstract = method.access_flags & 0x0400 != 0;
+    let is_native = method.access_flags & 0x0100 != 0;
+    if method.access_flags & 0x0010 != 0 && !is_init && !is_clinit {
+        out.push_str("final ");
+    }
+    if method.access_flags & 0x0020 != 0 && !is_init && !is_clinit {
+        out.push_str("synchronized ");
+    }
+    if is_native {
         out.push_str("native ");
     }
-    if method.access_flags & 0x0800 != 0 {
+    if is_abstract {
         out.push_str("abstract ");
     }
-    if method.access_flags & 0x1000 != 0 && !is_clinit {
-        out.push_str("final ");
+    if method.access_flags & 0x0800 != 0 {
+        out.push_str("strictfp ");
     }
 
     // Constructor or normal method
@@ -366,6 +394,11 @@ fn render_method(method: &MethodDecl) -> String {
             .map(|(ty, name)| format!("{} {}", short_type(ty), name))
             .collect();
         out.push_str(&params.join(", "));
+        // Abstract and native methods have no body in valid Java.
+        if is_abstract || is_native {
+            out.push_str(");\n");
+            return out;
+        }
         out.push_str(") {\n");
     }
 
@@ -535,6 +568,21 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
             }
             out.push_str(&pad);
             out.push_str("}\n");
+        }
+        Statement::Synchronized { lock, body } => {
+            out.push_str(&pad);
+            out.push_str("synchronized (");
+            out.push_str(&render_expression_at(lock, indent));
+            out.push_str(") {\n");
+            for s in body {
+                out.push_str(&render_statement(s, indent + 1));
+            }
+            out.push_str(&pad);
+            out.push_str("}\n");
+        }
+        Statement::Monitor { .. } => {
+            out.push_str(&pad);
+            out.push_str("/* monitor */\n");
         }
         Statement::For {
             init,
@@ -977,6 +1025,52 @@ mod tests {
             "watermark missing: {first:?}"
         );
         assert!(first.contains("github.com/oaniggggga/vinylite"));
+    }
+
+    fn method_with_flags(name: &str, access_flags: u16) -> MethodDecl {
+        MethodDecl {
+            name: name.to_string(),
+            statements: vec![],
+            access_flags,
+            return_type: "void".to_string(),
+            param_types: vec![],
+            param_names: vec![],
+            class_name: "Example".to_string(),
+        }
+    }
+
+    fn render_single_method(method: MethodDecl) -> String {
+        ClassDecl {
+            name: "Example".to_string(),
+            package: None,
+            imports: vec![],
+            fields: vec![],
+            methods: vec![method],
+            access_flags: 0x0001,
+            super_name: None,
+            is_enum: false,
+            enum_constants: vec![],
+        }
+        .render()
+    }
+
+    #[test]
+    fn renders_method_access_flags() {
+        // synchronized + final use their real bits (0x0020 / 0x0010).
+        let out = render_single_method(method_with_flags("work", 0x0001 | 0x0010 | 0x0020));
+        assert!(
+            out.contains("public final synchronized void work()"),
+            "{out}"
+        );
+        // Bridge (0x0040) and synthetic (0x1000) must never leak modifiers.
+        let out = render_single_method(method_with_flags("get", 0x0001 | 0x0040 | 0x1000));
+        assert!(!out.contains("native"), "bridge leaked: {out}");
+        assert!(!out.contains("final"), "synthetic leaked: {out}");
+        // Native and abstract methods are bodiless in valid Java.
+        let out = render_single_method(method_with_flags("wait0", 0x0001 | 0x0100));
+        assert!(out.contains("public native void wait0();"), "{out}");
+        let out = render_single_method(method_with_flags("run", 0x0400));
+        assert!(out.contains("abstract void run();"), "{out}");
     }
 
     #[test]
