@@ -4,6 +4,7 @@
 
 # Build artifacts and binaries
 vinylite
+betterpilot
 vinylite.exe
 *.pdb
 
