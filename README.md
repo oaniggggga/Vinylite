@@ -25,6 +25,40 @@ Recovery-first JVM classfile decompiler in Rust (CFR/Vineflower direction).
   corrupt live values), dead noise pruned, informative dead code kept;
 - CLI for single `.class` files and whole `.jar`/`.zip` archives.
 
+## Install
+
+Grab a prebuilt binary from [Releases](https://github.com/oaniggggga/betterpilot/releases)
+(Linux / macOS x64 + ARM64 / Windows), or build from source:
+
+```powershell
+cargo install --git https://github.com/oaniggggga/betterpilot
+```
+
+## Example
+
+Input bytecode of a trivial loop with an if/else inside (from `javac`):
+
+```java
+// betterpilot output
+public class SimpleTest {
+    public static void main(String[] arg0) {
+        StringBuilder var_1 = new StringBuilder();
+        var_1.append("test:");
+        for (int var_2 = 0; var_2 < 5; var_2++) {
+            if ((var_2 % 2) != 0) {
+                var_1.append("odd").append(var_2);
+            } else {
+                var_1.append("even").append(var_2);
+            }
+        }
+        System.out.println(var_1.toString());
+    }
+}
+```
+
+Counted loops render canonically, discarded calls are kept, and non-boolean
+conditions are restored to valid Java.
+
 ## Build & run
 
 A stable Rust toolchain is enough (no C compiler needed).
