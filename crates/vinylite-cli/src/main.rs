@@ -3,10 +3,10 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use clap::Parser;
 use vinylite_core::{
     build_class_decl, decompile_class, deobfuscate_name, inspect_class, parse_jar,
 };
-use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(name = "vinylite")]
@@ -244,10 +244,7 @@ fn write_folder(dir: &Path, files: &[(String, String)]) {
     }
 }
 
-fn get_inner_class_full_name(
-    class: &vinylite_core::ClassFile,
-    class_index: u16,
-) -> Option<String> {
+fn get_inner_class_full_name(class: &vinylite_core::ClassFile, class_index: u16) -> Option<String> {
     use vinylite_core::classfile::ConstantPoolEntry;
     use vinylite_core::recovery::Recoverable;
     match class.constant_pool.get(class_index as usize) {
@@ -271,9 +268,7 @@ fn get_inner_class_name(class: &vinylite_core::ClassFile, name_index: u16) -> Op
 }
 
 fn get_utf8_from_pool(
-    pool: &[vinylite_core::recovery::Recoverable<
-        vinylite_core::classfile::ConstantPoolEntry,
-    >],
+    pool: &[vinylite_core::recovery::Recoverable<vinylite_core::classfile::ConstantPoolEntry>],
     index: u16,
 ) -> Option<String> {
     match pool.get(index as usize) {
