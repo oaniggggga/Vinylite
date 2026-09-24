@@ -16,7 +16,9 @@ Recovery-first JVM classfile decompiler in Rust (CFR/Vineflower direction).
 - switch reconstruction (`tableswitch`/`lookupswitch` with multi-label
   cases, fallthrough preservation, per-arm join-value resolution);
 - `StringConcatFactory` folding back to `a + b` chains;
-- while/for loop reconstruction with nested if/else bodies;
+- counted-loop canonicalization: `init; while (i < n) { ...; i++ }` ->
+  `for (int i = 0; i < n; i++)` with compound assignments (`i++`, `x += n`);
+- CFR-style else rendering: `} else {` on one line, `else if` chains;
 - discarded method calls kept as expression statements (`sb.append("x");`);
 - non-boolean conditions restored to valid Java (`if (i % 2 != 0)`);
 - dead-code tolerance: unreachable traps are stack-sandboxed (never
@@ -39,11 +41,10 @@ re-inlining; unrecoverable entries get a fallback stub.
 
 ## Known limitations
 
-- for-loop desugaring is partial: loops render as `while` with the update
-  inside the body;
-- ternaries, try-with-resources and some try/catch shapes are not fully
-  reconstructed;
-- javac line-number tables are not used yet.
+- ternary reconstruction and try-with-resources are not implemented yet;
+- some complex try/catch shapes are not fully reconstructed;
+- javac line-number tables are not used yet;
+- `BufferedImage`-style StackMapTable types occasionally fall back to `var`.
 
 ## Development
 
