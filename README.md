@@ -1,6 +1,6 @@
 # Vinylite
 
-Recovery-first JVM classfile decompiler in Rust ? in the spirit of CFR and Vineflower.
+Recovery-first JVM classfile decompiler in Rust — in the spirit of CFR and Vineflower.
 
 It turns JVM bytecode back into readable Java and is built to survive malformed,
 obfuscated, and partially corrupted classfiles instead of giving up on them.
@@ -95,26 +95,29 @@ re-inlining; unrecoverable entries get a fallback stub.
 ## Benchmarks
 
 Wall-clock time to decompile complete jars (Windows x64, release build,
-single run; CFR 0.152 with a warmed JVM ? its cost includes JVM startup
+single run; CFR 0.152 with a warmed JVM — its cost includes JVM startup
 and JIT that Vinylite does not pay):
 
 | Jar | Classes | Vinylite | CFR 0.152 | Speedup |
 |---|---|---|---|---|
-| gson 2.11.0 | 224 | **0.27 s** | 1.69 s | 6.3x |
-| commons-lang3 3.14.0 | 404 | **0.44 s** | 3.63 s | 8.2x |
-| commons-io 2.15.1 | 339 | **0.32 s** | 2.67 s | 8.3x |
+| gson 2.11.0 | 224 | **0.20 s** | 1.57 s | 7.8x |
+| commons-lang3 3.14.0 | 404 | **0.54 s** | 3.42 s | 6.4x |
+| commons-io 2.15.1 | 339 | **0.31 s** | 2.50 s | 8.2x |
 
 Vinylite emits one `.java` per classfile including every nested/anonymous
 class; CFR inlines most anonymous classes into their parent and skips
 `module-info`, so file counts differ by design.
 
-Known output gaps vs CFR (measured on the same jars): deeply nested
-suppression chains still expand, and enum constant bodies with method
-overrides render better in CFR. Speed and robustness (zero panics across
+Known output gaps vs CFR (measured on the same jars): null-guarded
+resource close with conditional `addSuppressed` (e.g. `copy(URL, File)`
+in commons-io) stays expanded instead of folding into `try (...)` —
+26 leftover suppression calls on commons-io vs CFR's 6 (3 vs 2 on
+commons-lang3); enum constant bodies with method overrides also render
+better in CFR. Speed and robustness (zero panics across
 the corpora, per-class panic isolation) are Vinylite's current strengths.
-Try/catch coverage on commons-lang3: 77 try + 3 try-with-resources
-blocks vs CFR's 89; multi-catch, finally and plain TWR shapes are
-reconstructed canonically.
+Try/catch coverage on commons-lang3: 77 try + 7 try-with-resources
+blocks vs CFR's 89 + 10; multi-catch, finally and single-resource TWR
+shapes are reconstructed canonically.
 
 ## Development
 
