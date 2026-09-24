@@ -5479,6 +5479,7 @@ mod tests {
             local_variable_table: None,
             local_variable_type_table: None,
             stack_map_table: None,
+            line_number_table: None,
         }
     }
 

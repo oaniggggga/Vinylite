@@ -1,31 +1,84 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
 use vinylite_core::{
     build_class_decl, decompile_class, deobfuscate_name, inspect_class, parse_jar,
 };
 
-#[derive(Debug, Parser)]
-#[command(name = "vinylite")]
-#[command(about = "Recovery-first JVM classfile decompiler prototype")]
-struct Args {
-    #[arg(value_name = "INPUT")]
-    input: PathBuf,
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-    #[arg(
-        short,
-        long,
-        value_name = "PATH",
-        help = "Output file (.jar/.zip) or directory"
-    )]
+struct Args {
+    input: PathBuf,
     output: Option<PathBuf>,
 }
 
+fn print_help() {
+    println!(
+        "\
+vinylite {VERSION}
+Recovery-first JVM classfile decompiler (zero dependencies)
+
+USAGE:
+    vinylite <INPUT> [-o <PATH>]
+
+ARGS:
+    <INPUT>    .class file, .jar/.zip archive
+
+OPTIONS:
+    -o, --output <PATH>    Output file (.jar/.zip) or directory
+    -h, --help             Print this help
+    -V, --version          Print version"
+    );
+}
+
+fn parse_args() -> Option<Args> {
+    let mut raw = std::env::args().skip(1).peekable();
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+
+    while let Some(arg) = raw.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("vinylite {VERSION}");
+                std::process::exit(0);
+            }
+            "-o" | "--output" => {
+                let Some(val) = raw.next() else {
+                    eprintln!("fatal: --output requires a PATH");
+                    std::process::exit(2);
+                };
+                output = Some(PathBuf::from(val));
+            }
+            s if s.starts_with('-') => {
+                eprintln!("fatal: unknown flag {s} (see --help)");
+                std::process::exit(2);
+            }
+            s => {
+                if input.is_some() {
+                    eprintln!("fatal: unexpected extra argument {s} (see --help)");
+                    std::process::exit(2);
+                }
+                input = Some(PathBuf::from(s));
+            }
+        }
+    }
+
+    match input {
+        Some(input) => Some(Args { input, output }),
+        None => {
+            print_help();
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
-    let args = Args::parse();
+    let Some(args) = parse_args() else { return };
     let bytes = match fs::read(&args.input) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -214,30 +267,89 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
     }
 }
 
+/// Dependency-free ZIP writer (Stored only — source text is already compact;
+/// jars of `.java` output stay small without a deflate encoder).
 fn write_zip(path: &Path, files: &[(String, String)]) {
-    let file = fs::File::create(path).unwrap_or_else(|e| {
-        eprintln!("fatal: cannot create {}: {e}", path.display());
-        std::process::exit(2);
-    });
-    let mut zip = zip::ZipWriter::new(file);
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut out: Vec<u8> = Vec::new();
+    // (name, crc, size, local_header_offset)
+    let mut central: Vec<(String, u32, u32, u32)> = Vec::new();
 
     for (name, content) in files {
-        zip.start_file(name, options).unwrap_or_else(|e| {
-            eprintln!("fatal: cannot write entry {}: {e}", name);
-            std::process::exit(2);
-        });
-        zip.write_all(content.as_bytes()).unwrap_or_else(|e| {
-            eprintln!("fatal: cannot write content for {}: {e}", name);
-            std::process::exit(2);
-        });
+        let bytes = content.as_bytes();
+        let crc = vinylite_core::zipmini::crc32(bytes);
+        let size = bytes.len() as u32;
+        let local_off = out.len() as u32;
+        write_local_header(&mut out, name, crc, size);
+        out.extend_from_slice(bytes);
+        central.push((name.clone(), crc, size, local_off));
     }
 
-    zip.finish().unwrap_or_else(|e| {
-        eprintln!("fatal: cannot finalize zip: {e}");
+    let cd_start = out.len() as u32;
+    for (name, crc, size, local_off) in &central {
+        write_central_entry(&mut out, name, *crc, *size, *local_off);
+    }
+    let cd_size = out.len() as u32 - cd_start;
+    write_eocd(&mut out, central.len() as u16, cd_size, cd_start);
+
+    fs::write(path, &out).unwrap_or_else(|e| {
+        eprintln!("fatal: cannot write {}: {e}", path.display());
         std::process::exit(2);
     });
+}
+
+fn write_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn write_local_header(out: &mut Vec<u8>, name: &str, crc: u32, size: u32) {
+    write_u32(out, 0x0403_4b50);
+    write_u16(out, 20); // version needed
+    write_u16(out, 0x0800); // UTF-8 flag
+    write_u16(out, 0); // stored
+    write_u16(out, 0); // time
+    write_u16(out, 0); // date
+    write_u32(out, crc);
+    write_u32(out, size);
+    write_u32(out, size);
+    write_u16(out, name.len() as u16);
+    write_u16(out, 0); // extra
+    out.extend_from_slice(name.as_bytes());
+}
+
+fn write_central_entry(out: &mut Vec<u8>, name: &str, crc: u32, size: u32, local_off: u32) {
+    write_u32(out, 0x0201_4b50);
+    write_u16(out, 20); // version made by
+    write_u16(out, 20); // version needed
+    write_u16(out, 0x0800); // UTF-8
+    write_u16(out, 0); // stored
+    write_u16(out, 0);
+    write_u16(out, 0);
+    write_u32(out, crc);
+    write_u32(out, size);
+    write_u32(out, size);
+    write_u16(out, name.len() as u16);
+    write_u16(out, 0);
+    write_u16(out, 0);
+    write_u16(out, 0);
+    write_u16(out, 0);
+    write_u32(out, 0);
+    write_u32(out, local_off);
+    out.extend_from_slice(name.as_bytes());
+}
+
+fn write_eocd(out: &mut Vec<u8>, count: u16, cd_size: u32, cd_start: u32) {
+    write_u32(out, 0x0605_4b50);
+    write_u16(out, 0);
+    write_u16(out, 0);
+    write_u16(out, count);
+    write_u16(out, count);
+    write_u32(out, cd_size);
+    write_u32(out, cd_start);
+    write_u16(out, 0);
 }
 
 fn write_folder(dir: &Path, files: &[(String, String)]) {

@@ -10,5 +10,3 @@ path = "src/main.rs"
 
 [dependencies]
 vinylite-core.workspace = true
-clap.workspace = true
-zip.workspace = true

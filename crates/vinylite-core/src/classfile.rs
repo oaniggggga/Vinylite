@@ -1,7 +1,6 @@
 use crate::bytecode::{Instruction, decode_method_code};
 use crate::diagnostic::Diagnostic;
 use crate::recovery::Recoverable;
-use thiserror::Error;
 
 const CLASS_MAGIC: u32 = 0xcafebabe;
 
@@ -112,6 +111,13 @@ pub struct CodeAttribute {
     pub local_variable_table: Option<Vec<LocalVariableInfo>>,
     pub local_variable_type_table: Option<Vec<LocalVariableTypeEntry>>,
     pub stack_map_table: Option<Vec<StackMapFrame>>,
+    pub line_number_table: Option<Vec<LineNumberEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineNumberEntry {
+    pub start_pc: u16,
+    pub line_number: u16,
 }
 
 /// A StackMapTable frame (JVMS §4.7.4). Only the data needed for
@@ -166,11 +172,20 @@ pub struct ExceptionEntry {
     pub catch_type: u16, // 0 = catch-all (finally)
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    #[error("fatal classfile parse failure")]
     Fatal,
 }
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::Fatal => write!(f, "fatal classfile parse failure"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 pub struct ClassFileParser<'a> {
     bytes: &'a [u8],
@@ -503,6 +518,7 @@ impl<'a> ClassFileParser<'a> {
         let mut local_variable_table = None;
         let mut local_variable_type_table = None;
         let mut stack_map_table = None;
+        let mut line_number_table = None;
 
         if let Some(attr_count) = self.read_u16_recoverable() {
             for _ in 0..attr_count {
@@ -520,6 +536,9 @@ impl<'a> ClassFileParser<'a> {
                     }
                     Some("StackMapTable") => {
                         stack_map_table = self.parse_stack_map_table(attr_length);
+                    }
+                    Some("LineNumberTable") => {
+                        line_number_table = self.parse_line_number_table();
                     }
                     _ => {
                         let _ = self.skip_bytes(attr_length, "Code nested attribute body");
@@ -550,7 +569,24 @@ impl<'a> ClassFileParser<'a> {
             local_variable_table,
             local_variable_type_table,
             stack_map_table,
+            line_number_table,
         })
+    }
+
+    fn parse_line_number_table(&mut self) -> Option<Vec<LineNumberEntry>> {
+        let table_length = self.read_u16_recoverable()? as usize;
+        let mut table = Vec::with_capacity(table_length);
+        for _ in 0..table_length {
+            let start_pc = self.read_u16_recoverable()?;
+            let line_number = self.read_u16_recoverable()?;
+            table.push(LineNumberEntry {
+                start_pc,
+                line_number,
+            });
+        }
+        // Keep sorted by pc so consumers can binary-search / emit in order.
+        table.sort_by_key(|e| e.start_pc);
+        Some(table)
     }
 
     fn parse_local_variable_table(

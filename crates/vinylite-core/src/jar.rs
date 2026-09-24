@@ -1,6 +1,5 @@
 use crate::classfile::ClassFile;
 use crate::diagnostic::Diagnostic;
-use std::io::Read;
 
 pub struct JarEntry {
     pub name: String,
@@ -12,42 +11,12 @@ pub struct JarEntry {
 pub fn parse_jar(bytes: &[u8]) -> Vec<JarEntry> {
     let mut entries = Vec::new();
 
-    let mut reader = match zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
-        Ok(r) => r,
-        Err(_) => return entries,
-    };
-
-    for i in 0..reader.len() {
-        let mut entry = match reader.by_index(i) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let name = match entry.enclosed_name() {
-            Some(n) => n,
-            None => continue,
-        };
-
-        let name_str = match name.to_str() {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-
-        if !name_str.ends_with(".class") {
-            continue;
-        }
-
-        let mut class_bytes = Vec::new();
-        if entry.read_to_end(&mut class_bytes).is_err() {
-            entries.push(JarEntry {
-                name: name_str,
-                class: None,
-                diagnostics: vec![Diagnostic::error(0, "failed to read class bytes from JAR")],
-                class_bytes: None,
-            });
-            continue;
-        }
-
+    // Dependency-free ZIP extraction (Stored + Deflate, see `zipmini`).
+    // One poisoned class must not take down the whole archive: extraction
+    // or parse failures degrade to diagnostics + `None`, never a panic.
+    for (name, class_bytes) in crate::zipmini::extract_class_files(bytes) {
+        // Keep the lossy archive path normalized to `/` separators.
+        let name_str = name;
         let mut parser = crate::classfile::ClassFileParser::new(&class_bytes);
         let class = parser.parse().ok();
         let diagnostics = parser.into_diagnostics();

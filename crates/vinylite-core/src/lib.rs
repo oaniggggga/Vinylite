@@ -10,6 +10,7 @@ pub mod jar;
 pub mod loop_detect;
 pub mod lowering;
 pub mod recovery;
+pub mod zipmini;
 
 pub use ast::{BinaryOp, ClassDecl, Expression, MethodDecl, Statement, SwitchArm};
 pub use classfile::{

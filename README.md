@@ -16,6 +16,9 @@ obfuscated, and partially corrupted classfiles instead of giving up on them.
 - readable output: LVT-accurate locals, boolean simplification
   (`flag != 0` -> `flag`, `x = 1` -> `x = true`), constant folding,
   lambda inlining, enum detection, inner-class merging;
+- ternary reconstruction (`cond ? a : b` from if/else assignments);
+- try/catch/finally reconstruction incl. multi-catch and
+  try-with-resources (suppression-chain folding);
 - switch reconstruction (`tableswitch`/`lookupswitch` with multi-label
   cases, fallthrough preservation, per-arm join-value resolution);
 - `StringConcatFactory` folding back to `a + b` chains;
@@ -26,7 +29,16 @@ obfuscated, and partially corrupted classfiles instead of giving up on them.
 - non-boolean conditions restored to valid Java (`if (i % 2 != 0)`);
 - dead-code tolerance: unreachable traps are stack-sandboxed (never
   corrupt live values), dead noise pruned, informative dead code kept;
+- `LineNumberTable` parsing (statement ordering / diagnostics groundwork);
 - CLI for single `.class` files and whole `.jar`/`.zip` archives.
+
+## Zero dependencies
+
+Vinylite is fully self-contained: no third-party crates, no C compiler,
+no JVM at runtime. Argument parsing, error types, ZIP reading (Stored +
+Deflate via a built-in RFC1951 inflate) and ZIP writing are all
+hand-rolled in pure Rust — `cargo build` works offline from a clean
+registry cache.
 
 ## Install
 
@@ -64,12 +76,13 @@ conditions are restored to valid Java.
 
 ## Build & run
 
-A stable Rust toolchain is enough (no C compiler needed).
+A stable Rust toolchain is enough (no C compiler, no external crates).
 
 ```powershell
 cargo test --workspace
 cargo run -p vinylite-cli -- path\to\Example.class
 cargo run -p vinylite-cli -- app.jar -o out/
+cargo run -p vinylite-cli -- --help
 ```
 
 Single class prints to stdout; `-o` writes a file, directory, or archive
@@ -99,13 +112,6 @@ the corpora, per-class panic isolation) are Vinylite's current strengths.
 Try/catch coverage on commons-lang3: 77 try + 3 try-with-resources
 blocks vs CFR's 89; multi-catch, finally and plain TWR shapes are
 reconstructed canonically.
-
-## Known limitations
-
-- ternary reconstruction and try-with-resources are not implemented yet;
-- some complex try/catch shapes are not fully reconstructed;
-- javac line-number tables are not used yet;
-- `BufferedImage`-style StackMapTable types occasionally fall back to `var`.
 
 ## Development
 

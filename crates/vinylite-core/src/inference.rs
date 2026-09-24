@@ -870,6 +870,7 @@ mod tests {
             local_variable_table: None,
             local_variable_type_table: None,
             stack_map_table: None,
+            line_number_table: None,
         }
     }
 
@@ -901,6 +902,7 @@ mod tests {
             exception_table: Vec::new(),
             local_variable_table: None,
             local_variable_type_table: None,
+            line_number_table: None,
             stack_map_table: Some(vec![crate::classfile::StackMapFrame {
                 offset_delta: 0,
                 locals: vec![VerificationType::Object("#2".to_string())],
