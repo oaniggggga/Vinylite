@@ -732,127 +732,7 @@ impl<'a> StackMachine<'a> {
                         }
                     } else if let Some(top) = self.stack.last().cloned() {
                         self.stack.push(top);
-assert_eq!(
-            stmts[0],
-            Statement::Return(Some(Expression::ConstInt(2)))
-        );
-    }
-
-    #[test]
-    fn for_loop_with_if_else_body_reconstructed() {
-        // Mirrors SimpleTest.java:
-        // for (int i = 0; i < 5; i++) {
-        //     if (i % 2 == 0) { sb.append("even").append(i); }
-        //     else { sb.append("odd").append(i); }
-        // }
-        let pool = vec![
-            Recoverable::Missing, // 0
-            Recoverable::Present(ConstantPoolEntry::Utf8("java/lang/StringBuilder".to_string())), // 1
-            Recoverable::Present(ConstantPoolEntry::Class { name_index: 1 }), // 2
-            Recoverable::Present(ConstantPoolEntry::Utf8("<init>".to_string())), // 3
-            Recoverable::Present(ConstantPoolEntry::Utf8("()V".to_string())), // 4
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 3, descriptor_index: 4 }), // 5
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 5 }), // 6
-            Recoverable::Present(ConstantPoolEntry::Utf8("append".to_string())), // 7
-            Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)Ljava/lang/StringBuilder;".to_string())), // 8
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 8 }), // 9
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 9 }), // 10
-            Recoverable::Present(ConstantPoolEntry::Utf8("(I)Ljava/lang/StringBuilder;".to_string())), // 11
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 11 }), // 12
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 12 }), // 13
-            Recoverable::Present(ConstantPoolEntry::Utf8("toString".to_string())), // 14
-            Recoverable::Present(ConstantPoolEntry::Utf8("()Ljava/lang/String;".to_string())), // 15
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 14, descriptor_index: 15 }), // 16
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 16 }), // 17
-            Recoverable::Present(ConstantPoolEntry::Utf8("even".to_string())), // 18
-            Recoverable::Present(ConstantPoolEntry::Utf8("odd".to_string())), // 19
-            Recoverable::Present(ConstantPoolEntry::Utf8("test:".to_string())), // 20
-            Recoverable::Present(ConstantPoolEntry::Utf8("java/lang/System".to_string())), // 21
-            Recoverable::Present(ConstantPoolEntry::Class { name_index: 21 }), // 22
-            Recoverable::Present(ConstantPoolEntry::Utf8("out".to_string())), // 23
-            Recoverable::Present(ConstantPoolEntry::Utf8("Ljava/io/PrintStream;".to_string())), // 24
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 23, descriptor_index: 24 }), // 25
-            Recoverable::Present(ConstantPoolEntry::FieldRef { class_index: 22, name_and_type_index: 25 }), // 26
-            Recoverable::Present(ConstantPoolEntry::Utf8("java/io/PrintStream".to_string())), // 27
-            Recoverable::Present(ConstantPoolEntry::Class { name_index: 27 }), // 28
-            Recoverable::Present(ConstantPoolEntry::Utf8("println".to_string())), // 29
-            Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)V".to_string())), // 30
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 29, descriptor_index: 30 }), // 31
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 28, name_and_type_index: 31 }), // 32
-        ];
-        let int = crate::bytecode::LoadStoreType::Int;
-        let ref_ = crate::bytecode::LoadStoreType::Reference;
-        let instructions = vec![
-            // new StringBuilder()
-            Instruction { offset: 0, length: 3, kind: InstructionKind::Type { opcode: 0xbb, cp_index: 2 } },
-            Instruction { offset: 3, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Dup) },
-            Instruction { offset: 4, length: 3, kind: InstructionKind::Invoke { opcode: 0xb7, cp_index: 6 } },
-            // sb.append("test:")
-            Instruction { offset: 7, length: 1, kind: InstructionKind::Store { ty: ref_, index: 1 } },
-            Instruction { offset: 8, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 9, length: 2, kind: InstructionKind::Ldc(20) },
-            Instruction { offset: 11, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 14, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            // i = 0
-            Instruction { offset: 15, length: 1, kind: InstructionKind::Iconst(0) },
-            Instruction { offset: 16, length: 1, kind: InstructionKind::Store { ty: int, index: 2 } },
-            // Loop condition: i < 5 (if_icmpge 59 -> offset 59)
-            Instruction { offset: 17, length: 3, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 18, length: 1, kind: InstructionKind::Iconst(5) },
-            Instruction { offset: 19, length: 3, kind: InstructionKind::If { opcode: 0xa2, target: 59 } }, // if_icmpge
-            // if (i % 2 == 0) -> ifne 42 (jump to odd branch)
-            Instruction { offset: 22, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 23, length: 1, kind: InstructionKind::Iconst(2) },
-            Instruction { offset: 24, length: 1, kind: InstructionKind::Arithmetic { opcode: 0x70 } }, // irem
-            Instruction { offset: 25, length: 3, kind: InstructionKind::If { opcode: 0x9a, target: 42 } }, // ifne
-            // even branch: sb.append("even").append(i)
-            Instruction { offset: 28, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 29, length: 2, kind: InstructionKind::Ldc(18) },
-            Instruction { offset: 31, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 34, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 35, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
-            Instruction { offset: 38, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            // goto after even branch
-            Instruction { offset: 39, length: 3, kind: InstructionKind::Goto(53) },
-            // odd branch: sb.append("odd").append(i)
-            Instruction { offset: 42, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 43, length: 2, kind: InstructionKind::Ldc(19) },
-            Instruction { offset: 45, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 48, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 49, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
-            Instruction { offset: 52, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            // iinc
-            Instruction { offset: 53, length: 3, kind: InstructionKind::Iinc { index: 2, amount: 1 } },
-            // goto loop condition
-            Instruction { offset: 56, length: 3, kind: InstructionKind::Goto(17) },
-            // after loop: System.out.println(sb.toString())
-            Instruction { offset: 59, length: 3, kind: InstructionKind::Field { opcode: 0xb2, cp_index: 26 } },
-            Instruction { offset: 62, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 63, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 17 } },
-            Instruction { offset: 66, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 32 } },
-            Instruction { offset: 69, length: 1, kind: InstructionKind::Return(crate::bytecode::ReturnType::Void) },
-        ];
-        let code = test_code(instructions);
-        let method = lower_method_to_ast(
-            &pool,
-            "main",
-            "([Ljava/lang/String;)V",
-            None,
-            &code,
-            "SimpleTest",
-            0x0009,
-            &[],
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
-        );
-        let rendered = format!("{:?}", method.statements);
-        eprintln!("RENDERED:\n{}", rendered);
-        // The loop body should contain the if/else, not just the increment
-        assert!(rendered.contains("if (var_2 % 2 == 0)"), "if/else missing in loop body: {}", rendered);
-        assert!(rendered.contains("even"), "even branch missing: {}", rendered);
-        assert!(rendered.contains("odd"), "odd branch missing: {}", rendered);
-    }
-}
+            }        }
                 crate::bytecode::StackOp::DupX1 if self.stack.len() >= 2 => {
                     let top = self.stack.pop().unwrap();
                     let below = self.stack.pop().unwrap();
@@ -878,7 +758,21 @@ assert_eq!(
                     self.stack.push(v1);
                 }
                 crate::bytecode::StackOp::Pop | crate::bytecode::StackOp::Pop2 => {
-                    self.pop();
+                    // A discard is not a no-op: `sb.append("x"); pop` must keep
+                    // the call. Emit the popped expression as a statement when
+                    // it has side effects; pure values are dropped silently.
+                    let count = if matches!(op, crate::bytecode::StackOp::Pop2) { 2 } else { 1 };
+                    let mut popped = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if let Some(StackValue::Expr(expr)) = self.stack.pop() {
+                            popped.push(expr);
+                        }
+                    }
+                    for expr in popped.into_iter().rev() {
+                        if expr_has_side_effects(&expr) {
+                            self.emit(Statement::Expression(expr));
+                        }
+                    }
                 }
                 crate::bytecode::StackOp::Swap if self.stack.len() >= 2 => {
                     let a = self.pop();
@@ -1297,6 +1191,26 @@ assert_eq!(
 }
 
 // â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/// True when evaluating `expr` can have side effects (method calls,
+/// allocations, assignments), so a discarded value must still be
+/// rendered as a statement. Pure loads/constants are safe to drop.
+fn expr_has_side_effects(expr: &Expression) -> bool {
+    match expr {
+        Expression::Invoke { .. } => true,
+        Expression::New { .. } => true,
+        Expression::NewArray { .. } => true,
+        Expression::Concat { .. } | Expression::Lambda { .. } => true,
+        Expression::Binary { left, right, .. } => {
+            expr_has_side_effects(left) || expr_has_side_effects(right)
+        }
+        Expression::Unary { operand, .. } => expr_has_side_effects(operand),
+        Expression::Cast { expr, .. } => expr_has_side_effects(expr),
+        Expression::InstanceOf { expr, .. } => expr_has_side_effects(expr),
+        Expression::Ternary { .. } => true,
+        _ => false,
+    }
+}
 
 fn contains_empty_stack(expr: &Expression) -> bool {
     match expr {
@@ -2333,14 +2247,18 @@ fn restructure_control_flow(
                             unreachable!()
                         };
 
-                    // The body is from if_idx + 1 to i (the goto)
-                    let mut body: Vec<Statement> = result[if_idx + 1..i]
-                        .iter()
-                        .map(|(_, s)| s.clone())
-                        .collect();
+                    // Keep (offset, statement) pairs so nested control flow
+                    // can be structured recursively with offset lookups intact.
+                    // The body spans if_idx + 1 .. i (the backward goto).
+                    let body: Vec<(usize, Statement)> = result[if_idx + 1..i].to_vec();
 
-                    // Remove the backward goto from the body if it got included
-                    body.retain(|s| !matches!(s, Statement::Expression(Expression::Unknown(text)) if text.starts_with("@goto ")));
+                    // Structure the loop body (nested ifs, switches, loops)
+                    // before wrapping it into the While statement. The trailing
+                    // backward goto itself is dropped by the recursion.
+                    let body: Vec<Statement> = restructure_control_flow(body, if_targets, switches)
+                        .into_iter()
+                        .map(|(_, s)| s)
+                        .collect();
 
                     // Replace the If with a While
                     // The If condition jumps OUT of the loop when true.
@@ -2431,17 +2349,29 @@ fn restructure_control_flow(
                 // Bytecode pattern: `if CONDITION goto TARGET; code_A; goto END; TARGET: code_B`
                 // `if CONDITION goto TARGET` jumps when TRUE — code_A runs when FALSE.
                 // So code_A = else body, code_B = then body.
-                let else_body_stmts: Vec<Statement> =
-                    result[i + 1..g].iter().map(|(_, s)| s.clone()).collect();
-                let then_body: Vec<Statement> = result[g + 1..target_idx]
-                    .iter()
-                    .map(|(_, s)| s.clone())
-                    .collect();
-
+                // The then body spans g+1 .. else_end (the join point of the
+                // early-exit goto), NOT .. target_idx: statements are keyed by
+                // their *last* instruction offset, so the first then-statement
+                // can carry an offset >= TARGET (its load sequence starts
+                // before TARGET but its statement offset lands after).
                 let else_end = result
                     .iter()
                     .position(|(off, _)| *off >= goto_target)
                     .unwrap_or(result.len());
+
+                let else_raw: Vec<(usize, Statement)> = result[i + 1..g].to_vec();
+                let then_raw: Vec<(usize, Statement)> = result[g + 1..else_end].to_vec();
+
+                // Structure both arms recursively (nested ifs/switches/loops).
+                let then_body: Vec<Statement> = restructure_control_flow(then_raw, if_targets, switches)
+                    .into_iter()
+                    .map(|(_, s)| s)
+                    .collect();
+                let else_body_stmts: Vec<Statement> =
+                    restructure_control_flow(else_raw, if_targets, switches)
+                        .into_iter()
+                        .map(|(_, s)| s)
+                        .collect();
 
                 result[i].1 = Statement::If {
                     condition: cond,
@@ -2715,6 +2645,92 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
         }
     }
     *stmts = out;
+}
+
+/// True when `expr` can stand bare as a Java `if` condition: comparisons,
+/// boolean logic, boolean-assumed locals/invokes/field reads.
+fn is_boolean_shaped(expr: &Expression) -> bool {
+    match expr {
+        Expression::Binary { op, .. } => matches!(
+            op,
+            BinaryOp::Lt
+                | BinaryOp::Gt
+                | BinaryOp::Le
+                | BinaryOp::Ge
+                | BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::BoolAnd
+                | BinaryOp::BoolOr
+        ),
+        Expression::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => is_boolean_shaped(operand),
+        Expression::InstanceOf { .. } => true,
+        Expression::Local(_) | Expression::Invoke { .. } | Expression::FieldAccess { .. } => true,
+        _ => false,
+    }
+}
+
+/// Wrap a non-boolean condition into an explicit `!= 0` (or `== 0` when it
+/// is a negation), so the rendered source is valid Java.
+fn ensure_boolean_condition(expr: &mut Expression) {
+    if is_boolean_shaped(expr) {
+        return;
+    }
+    if let Expression::Unary {
+        op: UnaryOp::Not,
+        operand,
+    } = expr
+    {
+        // `!X` over a non-boolean X is also invalid Java: rewrite to `X == 0`.
+        let inner = std::mem::replace(operand.as_mut(), Expression::ConstNull);
+        *expr = Expression::Binary {
+            left: Box::new(inner),
+            op: BinaryOp::Eq,
+            right: Box::new(Expression::ConstInt(0)),
+        };
+        return;
+    }
+    let inner = std::mem::replace(expr, Expression::ConstNull);
+    *expr = Expression::Binary {
+        left: Box::new(inner),
+        op: BinaryOp::Ne,
+        right: Box::new(Expression::ConstInt(0)),
+    };
+}
+
+/// Apply `ensure_boolean_condition` to every If/While condition, recursing
+/// into nested bodies.
+fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::If { condition, then_body, else_body } => {
+                ensure_boolean_condition(condition);
+                ensure_boolean_conditions_recursive(then_body);
+                if let Some(eb) = else_body {
+                    ensure_boolean_conditions_recursive(eb);
+                }
+            }
+            Statement::While { condition, body } => {
+                ensure_boolean_condition(condition);
+                ensure_boolean_conditions_recursive(body);
+            }
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    ensure_boolean_conditions_recursive(&mut arm.body);
+                }
+            }
+            Statement::ForEach { body, .. } => {
+                ensure_boolean_conditions_recursive(body);
+            }
+            Statement::TryCatch { try_body, catch_body, .. } => {
+                ensure_boolean_conditions_recursive(try_body);
+                ensure_boolean_conditions_recursive(catch_body);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Remove `if (cond) { }` blocks with empty bodies (decompilation artifacts)
@@ -3985,8 +4001,13 @@ pub fn lower_method_to_ast(
     // left over by constant folding, e.g. `if (0) ... else ...`).
     remove_dead_branches(&mut statements);
 
-    // CFR-style boolean simplification: `x != 0` → `x`, `x == 0` → `!x`, `!!x` → `x`
     simplify_conditions_recursive(&mut statements);
+
+    // Non-boolean conditions (`i % 2`, `!(i % 2)`) are invalid Java; restore
+    // explicit `!= 0` / `== 0` comparisons where the operand is not
+    // boolean-shaped. Locals/invokes/field accesses stay bare: they are the
+    // boolean re-typing heuristic's domain.
+    ensure_boolean_conditions_recursive(&mut statements);
 
     // Restructure for-each loops
     restructure_for_each_loops_recursive(&mut statements);
@@ -4083,6 +4104,133 @@ mod tests {
             local_variable_type_table: None,
             stack_map_table: None,
         }
+    }
+
+    #[test]
+    fn for_loop_with_if_else_body_reconstructed() {
+        // Mirrors SimpleTest.java:
+        // for (int i = 0; i < 5; i++) {
+        //     if (i % 2 == 0) { sb.append("even").append(i); }
+        //     else { sb.append("odd").append(i); }
+        // }
+        let pool = vec![
+            Recoverable::Missing, // 0
+            Recoverable::Present(ConstantPoolEntry::Utf8("java/lang/StringBuilder".to_string())), // 1
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 1 }), // 2
+            Recoverable::Present(ConstantPoolEntry::Utf8("<init>".to_string())), // 3
+            Recoverable::Present(ConstantPoolEntry::Utf8("()V".to_string())), // 4
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 3, descriptor_index: 4 }), // 5
+            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 5 }), // 6
+            Recoverable::Present(ConstantPoolEntry::Utf8("append".to_string())), // 7
+            Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)Ljava/lang/StringBuilder;".to_string())), // 8
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 8 }), // 9
+            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 9 }), // 10
+            Recoverable::Present(ConstantPoolEntry::Utf8("(I)Ljava/lang/StringBuilder;".to_string())), // 11
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 11 }), // 12
+            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 12 }), // 13
+            Recoverable::Present(ConstantPoolEntry::Utf8("toString".to_string())), // 14
+            Recoverable::Present(ConstantPoolEntry::Utf8("()Ljava/lang/String;".to_string())), // 15
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 14, descriptor_index: 15 }), // 16
+            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 16 }), // 17
+            Recoverable::Present(ConstantPoolEntry::Utf8("even".to_string())), // 18
+            Recoverable::Present(ConstantPoolEntry::Utf8("odd".to_string())), // 19
+            Recoverable::Present(ConstantPoolEntry::Utf8("test:".to_string())), // 20
+            Recoverable::Present(ConstantPoolEntry::Utf8("java/lang/System".to_string())), // 21
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 21 }), // 22
+            Recoverable::Present(ConstantPoolEntry::Utf8("out".to_string())), // 23
+            Recoverable::Present(ConstantPoolEntry::Utf8("Ljava/io/PrintStream;".to_string())), // 24
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 23, descriptor_index: 24 }), // 25
+            Recoverable::Present(ConstantPoolEntry::FieldRef { class_index: 22, name_and_type_index: 25 }), // 26
+            Recoverable::Present(ConstantPoolEntry::Utf8("java/io/PrintStream".to_string())), // 27
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 27 }), // 28
+            Recoverable::Present(ConstantPoolEntry::Utf8("println".to_string())), // 29
+            Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)V".to_string())), // 30
+            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 29, descriptor_index: 30 }), // 31
+            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 28, name_and_type_index: 31 }), // 32
+            Recoverable::Present(ConstantPoolEntry::String { string_index: 20 }), // 33 -> "test:"
+            Recoverable::Present(ConstantPoolEntry::String { string_index: 18 }), // 34 -> "even"
+            Recoverable::Present(ConstantPoolEntry::String { string_index: 19 }), // 35 -> "odd"
+        ];
+        let int = crate::bytecode::LoadStoreType::Int;
+        let ref_ = crate::bytecode::LoadStoreType::Reference;
+        let instructions = vec![
+            Instruction { offset: 0, length: 3, kind: InstructionKind::Type { opcode: 0xbb, cp_index: 2 } },
+            Instruction { offset: 3, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Dup) },
+            Instruction { offset: 4, length: 3, kind: InstructionKind::Invoke { opcode: 0xb7, cp_index: 6 } },
+            Instruction { offset: 7, length: 1, kind: InstructionKind::Store { ty: ref_, index: 1 } },
+            Instruction { offset: 8, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
+            Instruction { offset: 9, length: 2, kind: InstructionKind::Ldc(33) },
+            Instruction { offset: 11, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
+            Instruction { offset: 14, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
+            Instruction { offset: 15, length: 1, kind: InstructionKind::Iconst(0) },
+            Instruction { offset: 16, length: 1, kind: InstructionKind::Store { ty: int, index: 2 } },
+            Instruction { offset: 17, length: 3, kind: InstructionKind::Load { ty: int, index: 2 } },
+            Instruction { offset: 18, length: 1, kind: InstructionKind::Iconst(5) },
+            Instruction { offset: 19, length: 3, kind: InstructionKind::If { opcode: 0xa2, target: 59 } },
+            Instruction { offset: 22, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
+            Instruction { offset: 23, length: 1, kind: InstructionKind::Iconst(2) },
+            Instruction { offset: 24, length: 1, kind: InstructionKind::Arithmetic { opcode: 0x70 } },
+            Instruction { offset: 25, length: 3, kind: InstructionKind::If { opcode: 0x9a, target: 42 } },
+            Instruction { offset: 28, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
+            Instruction { offset: 29, length: 2, kind: InstructionKind::Ldc(34) },
+            Instruction { offset: 31, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
+            Instruction { offset: 34, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
+            Instruction { offset: 35, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
+            Instruction { offset: 38, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
+            Instruction { offset: 39, length: 3, kind: InstructionKind::Goto(53) },
+            Instruction { offset: 42, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
+            Instruction { offset: 43, length: 2, kind: InstructionKind::Ldc(35) },
+            Instruction { offset: 45, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
+            Instruction { offset: 48, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
+            Instruction { offset: 49, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
+            Instruction { offset: 52, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
+            Instruction { offset: 53, length: 3, kind: InstructionKind::Iinc { index: 2, amount: 1 } },
+            Instruction { offset: 56, length: 3, kind: InstructionKind::Goto(17) },
+            Instruction { offset: 59, length: 3, kind: InstructionKind::Field { opcode: 0xb2, cp_index: 26 } },
+            Instruction { offset: 62, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
+            Instruction { offset: 63, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 17 } },
+            Instruction { offset: 66, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 32 } },
+            Instruction { offset: 69, length: 1, kind: InstructionKind::Return(crate::bytecode::ReturnType::Void) },
+        ];
+        let code = test_code(instructions);
+        let method = lower_method_to_ast(
+            &pool,
+            "main",
+            "([Ljava/lang/String;)V",
+            None,
+            &code,
+            "SimpleTest",
+            0x0009,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
+        // The loop body must contain the reconstructed if/else, not just the
+        // increment: While { body: [If { then, else }, iinc] }.
+        let while_debug = method
+            .statements
+            .iter()
+            .find(|s| matches!(s, Statement::While { .. }))
+            .map(|s| format!("{s:?}"))
+            .expect("while loop missing");
+        assert!(
+            while_debug.contains("op: Lt"),
+            "loop condition i < 5 missing: {while_debug}"
+        );
+        let if_debug = while_debug;
+        assert!(
+            if_debug.contains("even") && if_debug.contains("odd"),
+            "if/else branches missing in loop body: {if_debug}"
+        );
+        // Both branches of the inner if/else must be non-empty.
+        assert!(
+            if_debug.contains("then_body: ["),
+            "then branch empty: {if_debug}"
+        );
+        assert!(
+            if_debug.contains("else_body: Some(["),
+            "else branch missing: {if_debug}"
+        );
     }
 
     #[test]

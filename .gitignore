@@ -20,3 +20,6 @@ Xenon.class
 # OS / editor noise
 Thumbs.db
 .DS_Store
+
+# scratch comparison output
+xenon_new_out.java
