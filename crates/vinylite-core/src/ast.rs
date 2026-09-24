@@ -173,13 +173,14 @@ pub enum UnaryOp {
     Not,
     BitNot,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDecl {
     pub name: String,
     pub field_type: String,
     pub access_flags: u16,
     pub initial_value: Option<Expression>,
+    /// Short-rendered annotations, e.g. `Deprecated`, `SerializedName("x")`.
+    pub annotations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +192,8 @@ pub struct MethodDecl {
     pub param_types: Vec<String>,
     pub param_names: Vec<String>,
     pub class_name: String,
+    /// Short-rendered annotations, e.g. `Override`, `Deprecated`.
+    pub annotations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +207,8 @@ pub struct ClassDecl {
     pub super_name: Option<String>,
     pub is_enum: bool,
     pub enum_constants: Vec<String>,
+    /// Short-rendered annotations, e.g. `Deprecated`, `FunctionalInterface`.
+    pub annotations: Vec<String>,
 }
 
 impl ClassDecl {
@@ -220,8 +225,15 @@ impl ClassDecl {
             out.push_str(";\n\n");
         }
 
-        // Render body first (to filter imports by actual usage)
+        // Render body first (to filter imports by actual usage).
+        // Annotations render into the body so their short names take part
+        // in import filtering.
         let mut body = String::new();
+        for annotation in &self.annotations {
+            body.push('@');
+            body.push_str(annotation);
+            body.push('\n');
+        }
 
         // Class header
         if self.is_enum {
@@ -258,6 +270,11 @@ impl ClassDecl {
                     || field.name == "INSTANCE")
             {
                 continue;
+            }
+            for annotation in &field.annotations {
+                body.push_str("    @");
+                body.push_str(annotation);
+                body.push('\n');
             }
             body.push_str("    ");
             if field.access_flags & 0x0001 != 0 {
@@ -328,7 +345,13 @@ fn render_method(method: &MethodDecl) -> String {
     let mut out = String::new();
     let pad = "    ";
 
-    // Access modifiers
+    // Annotations first, then access modifiers, all on the method indent.
+    for annotation in &method.annotations {
+        out.push_str(pad);
+        out.push('@');
+        out.push_str(annotation);
+        out.push('\n');
+    }
     out.push_str(pad);
     let is_clinit = method.name == "<clinit>";
     let is_init = method.name == "<init>";
@@ -1017,6 +1040,7 @@ mod tests {
             super_name: None,
             is_enum: false,
             enum_constants: vec![],
+            annotations: vec![],
         };
         let rendered = class.render();
         let first = rendered.lines().next().unwrap_or_default();
@@ -1036,6 +1060,7 @@ mod tests {
             param_types: vec![],
             param_names: vec![],
             class_name: "Example".to_string(),
+            annotations: vec![],
         }
     }
 
@@ -1050,6 +1075,7 @@ mod tests {
             super_name: None,
             is_enum: false,
             enum_constants: vec![],
+            annotations: vec![],
         }
         .render()
     }
@@ -1074,6 +1100,23 @@ mod tests {
     }
 
     #[test]
+    fn renders_annotations_above_members() {
+        let mut method = method_with_flags("get", 0x0001);
+        method.annotations = vec!["Override".to_string(), "Deprecated".to_string()];
+        let out = render_single_method(method);
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.trim() == "@Override")
+            .expect("missing @Override");
+        assert_eq!(lines[at + 1].trim(), "@Deprecated");
+        assert!(
+            lines[at + 2].starts_with("    public "),
+            "member follows annotations: {out}"
+        );
+    }
+
+    #[test]
     fn renders_simple_class() {
         let class = ClassDecl {
             name: "Example".to_string(),
@@ -1091,11 +1134,13 @@ mod tests {
                 param_types: vec![],
                 param_names: vec![],
                 class_name: "Example".to_string(),
+                annotations: vec![],
             }],
             access_flags: 0x0001,
             super_name: Some("java.lang.Object".to_string()),
             is_enum: false,
             enum_constants: vec![],
+            annotations: vec![],
         };
 
         let rendered = class.render();
@@ -1118,12 +1163,14 @@ mod tests {
                 field_type: "java.util.List<java.lang.String>".to_string(),
                 access_flags: 0x0002,
                 initial_value: None,
+                annotations: vec![],
             }],
             methods: vec![],
             access_flags: 0x0001,
             super_name: Some("java.lang.Enum<com.example.Repo>".to_string()),
             is_enum: false,
             enum_constants: vec![],
+            annotations: vec![],
         };
 
         let rendered = class.render();
@@ -1169,11 +1216,13 @@ mod tests {
                 param_types: vec![],
                 param_names: vec![],
                 class_name: "S".to_string(),
+                annotations: vec![],
             }],
             access_flags: 0x0001,
             super_name: None,
             is_enum: false,
             enum_constants: vec![],
+            annotations: vec![],
         };
         let rendered = class.render();
         assert!(rendered.contains("switch (mode) {"));

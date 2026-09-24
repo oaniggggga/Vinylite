@@ -16,6 +16,8 @@ pub struct ClassFile {
     pub inner_classes: Vec<InnerClassInfo>,
     pub bootstrap_methods: Vec<BootstrapMethodInfo>,
     pub signature: Option<String>,
+    pub annotations: Vec<Annotation>,
+    pub deprecated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,8 @@ pub struct FieldInfo {
     pub name_index: u16,
     pub descriptor_index: u16,
     pub signature: Option<String>,
+    pub annotations: Vec<Annotation>,
+    pub deprecated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +103,173 @@ pub struct MethodInfo {
     pub descriptor_index: u16,
     pub signature: Option<String>,
     pub code: Option<CodeAttribute>,
+    pub annotations: Vec<Annotation>,
+    pub deprecated: bool,
+}
+
+/// A parsed `Runtime[In]VisibleAnnotations` entry (JVMS §4.7.16/17).
+/// Kept structured so rendering (short names) and import collection
+/// (dotted names) can each take what they need without a constant pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Annotation {
+    /// Dotted type name, e.g. `java.lang.Deprecated`.
+    pub type_name: String,
+    pub pairs: Vec<(String, AnnotationValue)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnnotationValue {
+    Int { value: i64, long: bool },
+    Boolean(bool),
+    Char(char),
+    FloatBits(u32),
+    DoubleBits(u64),
+    Str(String),
+    Enum { type_name: String, constant: String },
+    Class(String),
+    Nested(Annotation),
+    Array(Vec<AnnotationValue>),
+}
+
+fn short_annotation_name(dotted: &str) -> String {
+    dotted
+        .rsplit(['.', '$'])
+        .next()
+        .unwrap_or(dotted)
+        .to_string()
+}
+
+fn escape_annotation_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+impl AnnotationValue {
+    fn render_short(&self) -> String {
+        match self {
+            AnnotationValue::Int { value, long } => {
+                if *long {
+                    format!("{value}L")
+                } else {
+                    format!("{value}")
+                }
+            }
+            AnnotationValue::Boolean(b) => b.to_string(),
+            AnnotationValue::Char(c) => match c {
+                '\'' => "'\\''".to_string(),
+                '\\' => "'\\\\'".to_string(),
+                '\n' => "'\\n'".to_string(),
+                '\r' => "'\\r'".to_string(),
+                '\t' => "'\\t'".to_string(),
+                c if c.is_control() => format!("'\\u{:04x}'", *c as u32),
+                c => format!("'{c}'"),
+            },
+            AnnotationValue::FloatBits(bits) => {
+                let v = f32::from_bits(*bits);
+                if v.is_nan() {
+                    "Float.NaN".to_string()
+                } else if v.is_infinite() {
+                    if v.is_sign_positive() {
+                        "Float.POSITIVE_INFINITY".to_string()
+                    } else {
+                        "Float.NEGATIVE_INFINITY".to_string()
+                    }
+                } else {
+                    format!("{v:?}f")
+                }
+            }
+            AnnotationValue::DoubleBits(bits) => {
+                let v = f64::from_bits(*bits);
+                if v.is_nan() {
+                    "Double.NaN".to_string()
+                } else if v.is_infinite() {
+                    if v.is_sign_positive() {
+                        "Double.POSITIVE_INFINITY".to_string()
+                    } else {
+                        "Double.NEGATIVE_INFINITY".to_string()
+                    }
+                } else {
+                    format!("{v:?}")
+                }
+            }
+            AnnotationValue::Str(s) => format!("\"{}\"", escape_annotation_string(s)),
+            AnnotationValue::Enum {
+                type_name,
+                constant,
+            } => format!("{}.{constant}", short_annotation_name(type_name)),
+            AnnotationValue::Class(name) => {
+                let dims = name.matches("[]").count();
+                let base = name.replace("[]", "");
+                format!(
+                    "{}{}.class",
+                    short_annotation_name(&base),
+                    "[]".repeat(dims)
+                )
+            }
+            AnnotationValue::Nested(annotation) => annotation.render_short(),
+            AnnotationValue::Array(items) => {
+                let inner: Vec<String> = items.iter().map(|v| v.render_short()).collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+        }
+    }
+
+    /// Dotted class names this value references (for import collection).
+    fn referenced_types(&self) -> Vec<String> {
+        match self {
+            AnnotationValue::Enum { type_name, .. } => vec![type_name.clone()],
+            AnnotationValue::Class(name) => {
+                vec![name.replace("[]", "")]
+            }
+            AnnotationValue::Nested(annotation) => annotation.referenced_types(),
+            AnnotationValue::Array(items) => {
+                items.iter().flat_map(|v| v.referenced_types()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl Annotation {
+    /// `@Type`, `@Type(value)` or `@Type(k=v, ...)` with short names.
+    pub fn render_short(&self) -> String {
+        let head = short_annotation_name(&self.type_name);
+        if self.pairs.is_empty() {
+            return head;
+        }
+        if self.pairs.len() == 1 && self.pairs[0].0 == "value" {
+            return format!("{}({})", head, self.pairs[0].1.render_short());
+        }
+        let inner: Vec<String> = self
+            .pairs
+            .iter()
+            .map(|(k, v)| format!("{k}={}", v.render_short()))
+            .collect();
+        format!("{}({})", head, inner.join(", "))
+    }
+
+    /// Dotted type names for import collection: the annotation type plus
+    /// any enum/class value types.
+    pub fn referenced_types(&self) -> Vec<String> {
+        let mut out = vec![self.type_name.clone()];
+        for (_, v) in &self.pairs {
+            out.extend(v.referenced_types());
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -216,13 +387,13 @@ impl<'a> ClassFileParser<'a> {
         let major_version = self.read_u16_fatal("major version")?;
         let constant_pool = self.parse_constant_pool()?;
 
-        let _access_flags = self.read_u16_fatal("access flags")?;
+        let class_access_flags = self.read_u16_fatal("access flags")?;
         let this_class = self.read_u16_fatal("this class")?;
         let super_class = self.read_u16_fatal("super class")?;
         self.skip_table("interfaces")?;
         let fields = self.parse_fields(&constant_pool)?;
         let methods = self.parse_methods(&constant_pool)?;
-        let (inner_classes, bootstrap_methods, signature) =
+        let (inner_classes, bootstrap_methods, signature, annotations, attr_deprecated) =
             self.parse_class_attributes(&constant_pool);
 
         Ok(ClassFile {
@@ -236,6 +407,8 @@ impl<'a> ClassFileParser<'a> {
             inner_classes,
             bootstrap_methods,
             signature,
+            annotations,
+            deprecated: attr_deprecated || class_access_flags & 0x2000 != 0,
         })
     }
 
@@ -442,6 +615,8 @@ impl<'a> ClassFileParser<'a> {
             let attribute_count = self.read_u16_fatal("method attributes count")?;
             let mut code = None;
             let mut signature = None;
+            let mut annotations = Vec::new();
+            let mut deprecated = false;
 
             for _ in 0..attribute_count {
                 let attribute_name_index = self.read_u16_fatal("method attribute name index")?;
@@ -453,6 +628,12 @@ impl<'a> ClassFileParser<'a> {
                     code = self.parse_code_attribute(attribute_length, constant_pool);
                 } else if attribute_name.as_deref() == Some("Signature") {
                     signature = self.parse_signature_attribute(attribute_length, constant_pool);
+                } else if attribute_name.as_deref() == Some("RuntimeVisibleAnnotations")
+                    || attribute_name.as_deref() == Some("RuntimeInvisibleAnnotations")
+                {
+                    annotations.extend(self.parse_annotations_table(constant_pool));
+                } else if attribute_name.as_deref() == Some("Deprecated") {
+                    deprecated = true;
                 } else {
                     self.skip_bytes(attribute_length, "method attribute body")?;
                 }
@@ -463,12 +644,17 @@ impl<'a> ClassFileParser<'a> {
                 }
             }
 
+            if access_flags & 0x2000 != 0 {
+                deprecated = true;
+            }
             methods.push(MethodInfo {
                 access_flags,
                 name_index,
                 descriptor_index,
                 signature,
                 code,
+                annotations,
+                deprecated,
             });
         }
 
@@ -587,6 +773,145 @@ impl<'a> ClassFileParser<'a> {
         // Keep sorted by pc so consumers can binary-search / emit in order.
         table.sort_by_key(|e| e.start_pc);
         Some(table)
+    }
+
+    /// Best-effort `Runtime[In]VisibleAnnotations` parser (JVMS §4.7.16/17).
+    /// Truncation or an unknown element tag ends the table early with a
+    /// diagnostic — the annotations parsed so far are still returned, and
+    /// the caller resyncs via the attribute length.
+    fn parse_annotations_table(
+        &mut self,
+        pool: &[Recoverable<ConstantPoolEntry>],
+    ) -> Vec<Annotation> {
+        let count = match self.read_u16_recoverable() {
+            Some(c) => c as usize,
+            None => return Vec::new(),
+        };
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.parse_annotation(pool) {
+                Some(annotation) => out.push(annotation),
+                None => {
+                    self.diagnostics.push(Diagnostic::warning(
+                        self.offset,
+                        "truncated annotation entry, rest of table skipped",
+                    ));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    fn parse_annotation(&mut self, pool: &[Recoverable<ConstantPoolEntry>]) -> Option<Annotation> {
+        let type_index = self.read_u16_recoverable()?;
+        let descriptor = cp_utf8(pool, type_index)?;
+        let pair_count = self.read_u16_recoverable()?;
+        let mut pairs = Vec::with_capacity(pair_count as usize);
+        for _ in 0..pair_count {
+            let name_index = self.read_u16_recoverable()?;
+            let name = cp_utf8(pool, name_index)?;
+            let value = self.parse_annotation_element(pool)?;
+            pairs.push((name, value));
+        }
+        Some(Annotation {
+            type_name: field_descriptor_to_dotted(&descriptor),
+            pairs,
+        })
+    }
+
+    fn parse_annotation_element(
+        &mut self,
+        pool: &[Recoverable<ConstantPoolEntry>],
+    ) -> Option<AnnotationValue> {
+        let tag = self.read_u8_recoverable("annotation element tag")?;
+        let const_index = |parser: &mut Self| parser.read_u16_recoverable();
+        match tag {
+            b'B' | b'C' | b'I' | b'S' | b'Z' => {
+                let index = const_index(self)?;
+                let value = match pool.get(index as usize) {
+                    Some(Recoverable::Present(ConstantPoolEntry::Integer(v))) => *v as i64,
+                    _ => return None,
+                };
+                match tag {
+                    b'Z' => Some(AnnotationValue::Boolean(value != 0)),
+                    b'C' => char::from_u32(value as u32).map(AnnotationValue::Char),
+                    _ => Some(AnnotationValue::Int { value, long: false }),
+                }
+            }
+            b'J' => {
+                let index = const_index(self)?;
+                match pool.get(index as usize) {
+                    Some(Recoverable::Present(ConstantPoolEntry::Long(v))) => {
+                        Some(AnnotationValue::Int {
+                            value: *v,
+                            long: true,
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            b'F' => {
+                let index = const_index(self)?;
+                match pool.get(index as usize) {
+                    Some(Recoverable::Present(ConstantPoolEntry::Float(bits))) => {
+                        Some(AnnotationValue::FloatBits(*bits))
+                    }
+                    _ => None,
+                }
+            }
+            b'D' => {
+                let index = const_index(self)?;
+                match pool.get(index as usize) {
+                    Some(Recoverable::Present(ConstantPoolEntry::Double(bits))) => {
+                        Some(AnnotationValue::DoubleBits(*bits))
+                    }
+                    _ => None,
+                }
+            }
+            b's' => {
+                let index = const_index(self)?;
+                match pool.get(index as usize) {
+                    Some(Recoverable::Present(ConstantPoolEntry::String { string_index })) => {
+                        cp_utf8(pool, *string_index).map(AnnotationValue::Str)
+                    }
+                    _ => None,
+                }
+            }
+            b'e' => {
+                let type_index = self.read_u16_recoverable()?;
+                let const_index = self.read_u16_recoverable()?;
+                let descriptor = cp_utf8(pool, type_index)?;
+                let constant = cp_utf8(pool, const_index)?;
+                Some(AnnotationValue::Enum {
+                    type_name: field_descriptor_to_dotted(&descriptor),
+                    constant,
+                })
+            }
+            b'c' => {
+                let index = const_index(self)?;
+                let descriptor = cp_utf8(pool, index)?;
+                Some(AnnotationValue::Class(field_descriptor_to_dotted(
+                    &descriptor,
+                )))
+            }
+            b'@' => self.parse_annotation(pool).map(AnnotationValue::Nested),
+            b'[' => {
+                let count = self.read_u16_recoverable()? as usize;
+                let mut items = Vec::with_capacity(count);
+                for _ in 0..count {
+                    items.push(self.parse_annotation_element(pool)?);
+                }
+                Some(AnnotationValue::Array(items))
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::warning(
+                    self.offset,
+                    format!("unknown annotation element tag 0x{tag:02x}"),
+                ));
+                None
+            }
+        }
     }
 
     fn parse_local_variable_table(
@@ -765,30 +1090,42 @@ impl<'a> ClassFileParser<'a> {
         cp_utf8(constant_pool, index)
     }
 
-    /// Like `skip_attributes` but captures a `Signature` attribute value.
+    /// Like `skip_attributes` but captures `Signature`, `Deprecated` and
+    /// `Runtime[In]VisibleAnnotations` values.
     fn skip_attributes_collect_signature(
         &mut self,
         label: impl AsRef<str>,
         constant_pool: &[Recoverable<ConstantPoolEntry>],
-    ) -> Result<Option<String>, ParseError> {
+    ) -> Result<(Option<String>, Vec<Annotation>, bool), ParseError> {
         let count = self.read_u16_fatal(format!("{} count", label.as_ref()))?;
         let mut signature = None;
+        let mut annotations = Vec::new();
+        let mut deprecated = false;
         for _ in 0..count {
             let name_index = self.read_u16_fatal(format!("{} name index", label.as_ref()))?;
             let length = self.read_u32_fatal(format!("{} length", label.as_ref()))? as usize;
             let attr_start = self.offset;
             let attr_name = cp_utf8(constant_pool, name_index);
-            if attr_name.as_deref() == Some("Signature") {
-                signature = self.parse_signature_attribute(length, constant_pool);
-            } else {
-                self.skip_bytes(length, format!("{} body", label.as_ref()))?;
+            match attr_name.as_deref() {
+                Some("Signature") => {
+                    signature = self.parse_signature_attribute(length, constant_pool);
+                }
+                Some("RuntimeVisibleAnnotations") | Some("RuntimeInvisibleAnnotations") => {
+                    annotations.extend(self.parse_annotations_table(constant_pool));
+                }
+                Some("Deprecated") => {
+                    deprecated = true;
+                }
+                _ => {
+                    self.skip_bytes(length, format!("{} body", label.as_ref()))?;
+                }
             }
             if self.offset < attr_start + length {
                 let remaining = attr_start + length - self.offset;
                 self.skip_bytes(remaining, format!("{} padding", label.as_ref()))?;
             }
         }
-        Ok(signature)
+        Ok((signature, annotations, deprecated))
     }
 
     fn parse_fields(
@@ -801,13 +1138,15 @@ impl<'a> ClassFileParser<'a> {
             let access_flags = self.read_u16_fatal("field access flags")?;
             let name_index = self.read_u16_fatal("field name index")?;
             let descriptor_index = self.read_u16_fatal("field descriptor index")?;
-            let signature =
+            let (signature, annotations, attr_deprecated) =
                 self.skip_attributes_collect_signature("field attributes", constant_pool)?;
             fields.push(FieldInfo {
                 access_flags,
                 name_index,
                 descriptor_index,
                 signature,
+                annotations,
+                deprecated: attr_deprecated || access_flags & 0x2000 != 0,
             });
         }
         Ok(fields)
@@ -866,7 +1205,8 @@ impl<'a> ClassFileParser<'a> {
     }
 
     /// Single pass over class-level attributes, collecting BootstrapMethods,
-    /// Signature and InnerClasses. Unknown attributes are skipped.
+    /// Signature, InnerClasses, annotations and Deprecated. Unknown
+    /// attributes are skipped.
     fn parse_class_attributes(
         &mut self,
         constant_pool: &[Recoverable<ConstantPoolEntry>],
@@ -874,18 +1214,22 @@ impl<'a> ClassFileParser<'a> {
         Vec<InnerClassInfo>,
         Vec<BootstrapMethodInfo>,
         Option<String>,
+        Vec<Annotation>,
+        bool,
     ) {
         // After methods, the class attributes section follows:
         //   attributes_count: u16
         //   attributes[attributes_count]: each has name_index(u16), length(u32), info(bytes)
         let attr_count = match self.read_u16_recoverable() {
             Some(c) => c,
-            None => return (Vec::new(), Vec::new(), None),
+            None => return (Vec::new(), Vec::new(), None, Vec::new(), false),
         };
 
         let mut inner_classes = Vec::new();
         let mut bootstrap_methods = Vec::new();
         let mut signature = None;
+        let mut annotations = Vec::new();
+        let mut deprecated = false;
 
         for _ in 0..attr_count {
             let attr_name_index = match self.read_u16_recoverable() {
@@ -913,6 +1257,12 @@ impl<'a> ClassFileParser<'a> {
                 Some("Signature") => {
                     signature = self.parse_signature_attribute(attr_length, constant_pool);
                 }
+                Some("RuntimeVisibleAnnotations") | Some("RuntimeInvisibleAnnotations") => {
+                    annotations.extend(self.parse_annotations_table(constant_pool));
+                }
+                Some("Deprecated") => {
+                    deprecated = true;
+                }
                 _ => {}
             }
 
@@ -923,7 +1273,13 @@ impl<'a> ClassFileParser<'a> {
                 let _ = self.skip_bytes(remaining, "skip class attribute");
             }
         }
-        (inner_classes, bootstrap_methods, signature)
+        (
+            inner_classes,
+            bootstrap_methods,
+            signature,
+            annotations,
+            deprecated,
+        )
     }
 
     fn parse_inner_classes_body(&mut self) -> Option<Vec<InnerClassInfo>> {
@@ -1068,6 +1424,23 @@ fn cp_utf8(constant_pool: &[Recoverable<ConstantPoolEntry>], index: u16) -> Opti
     }
 }
 
+/// Map an annotation type/class descriptor to dotted form:
+/// `Ljava/lang/Deprecated;` → `java.lang.Deprecated`,
+/// `[Ljava/lang/String;` → `java.lang.String[]`.
+fn field_descriptor_to_dotted(descriptor: &str) -> String {
+    let raw = descriptor.trim();
+    let dims = raw.bytes().take_while(|&b| b == b'[').count();
+    let mut inner = &raw[dims..];
+    if inner.starts_with('L') && inner.ends_with(';') {
+        inner = &inner[1..inner.len() - 1];
+    }
+    let mut dotted = inner.replace('/', ".");
+    for _ in 0..dims {
+        dotted.push_str("[]");
+    }
+    dotted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,6 +1457,52 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.severity == crate::Severity::Fatal)
         );
+    }
+
+    #[test]
+    fn parses_marker_and_valued_annotations() {
+        // Table: [@Deprecated, @Anno(text="hello", level=Level.HIGH)].
+        let pool = vec![
+            Recoverable::Missing,
+            Recoverable::Present(ConstantPoolEntry::Utf8(
+                "Ljava/lang/Deprecated;".to_string(),
+            )),
+            Recoverable::Present(ConstantPoolEntry::Utf8("Lcom/example/Anno;".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Utf8("text".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Utf8("level".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Utf8("hello".to_string())),
+            Recoverable::Present(ConstantPoolEntry::String { string_index: 5 }),
+            Recoverable::Present(ConstantPoolEntry::Utf8("Lcom/example/Level;".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Utf8("HIGH".to_string())),
+        ];
+        let bytes = [
+            0x00, 0x02, // count = 2
+            0x00, 0x01, 0x00, 0x00, // @Deprecated, no pairs
+            0x00, 0x02, 0x00, 0x02, // @Anno, 2 pairs
+            0x00, 0x03, b's', 0x00, 0x06, // text = "hello"
+            0x00, 0x04, b'e', 0x00, 0x07, 0x00, 0x08, // level = Level.HIGH
+        ];
+        let mut parser = ClassFileParser::new(&bytes);
+        let annotations = parser.parse_annotations_table(&pool);
+        assert_eq!(annotations.len(), 2);
+        assert_eq!(annotations[0].render_short(), "Deprecated");
+        assert_eq!(
+            annotations[1].render_short(),
+            "Anno(text=\"hello\", level=Level.HIGH)"
+        );
+        let refs = annotations[1].referenced_types();
+        assert!(refs.contains(&"com.example.Anno".to_string()));
+        assert!(refs.contains(&"com.example.Level".to_string()));
+    }
+
+    #[test]
+    fn truncated_annotations_degrade_gracefully() {
+        let pool: Vec<Recoverable<ConstantPoolEntry>> = vec![Recoverable::Missing];
+        let bytes = [0x00, 0x01, 0x00]; // count=1, then EOF mid-entry
+        let mut parser = ClassFileParser::new(&bytes);
+        let annotations = parser.parse_annotations_table(&pool);
+        assert!(annotations.is_empty());
+        assert!(!parser.into_diagnostics().is_empty());
     }
 
     #[test]

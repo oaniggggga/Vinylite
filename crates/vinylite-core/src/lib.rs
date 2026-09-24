@@ -57,6 +57,79 @@ pub fn decompile_class(bytes: &[u8]) -> String {
     }
 }
 
+/// Short-rendered annotation strings for a method: bytecode annotations
+/// first, then `@Deprecated` (flag or attribute), then `@Override` for the
+/// five `java.lang.Object` methods (provable without a class hierarchy).
+fn rendered_method_annotations(
+    method: &crate::classfile::MethodInfo,
+    method_name: &str,
+    descriptor: &str,
+    class_internal_name: &str,
+) -> Vec<String> {
+    let mut out: Vec<String> = method
+        .annotations
+        .iter()
+        .map(|a| a.render_short())
+        .collect();
+    if method.deprecated
+        && !method
+            .annotations
+            .iter()
+            .any(|a| a.type_name == "java.lang.Deprecated")
+    {
+        out.push("Deprecated".to_string());
+    }
+    if is_object_override(
+        method_name,
+        descriptor,
+        method.access_flags,
+        class_internal_name,
+    ) && !out.iter().any(|a| a == "Override")
+    {
+        out.push("Override".to_string());
+    }
+    out
+}
+
+/// True for instance methods that provably override `java.lang.Object`:
+/// `equals/hashCode/toString/clone/finalize` with exact descriptors.
+/// No hierarchy needed — any instance method with these signatures (outside
+/// `java.lang.Object` itself) overrides Object.
+fn is_object_override(
+    method_name: &str,
+    descriptor: &str,
+    access_flags: u16,
+    class_internal_name: &str,
+) -> bool {
+    if access_flags & 0x0008 != 0 || class_internal_name == "java/lang/Object" {
+        return false;
+    }
+    matches!(
+        (method_name, descriptor),
+        ("equals", "(Ljava/lang/Object;)Z")
+            | ("hashCode", "()I")
+            | ("toString", "()Ljava/lang/String;")
+            | ("clone", "()Ljava/lang/Object;")
+            | ("finalize", "()V")
+    )
+}
+
+/// Short-rendered annotation strings for a field or class.
+fn rendered_member_annotations(
+    annotations: &[crate::classfile::Annotation],
+    deprecated: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = annotations.iter().map(|a| a.render_short()).collect();
+    if deprecated
+        && !annotations
+            .iter()
+            .any(|a| a.type_name == "java.lang.Deprecated")
+    {
+        out.push("Deprecated".to_string());
+    }
+    out
+}
+
 pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
     let class_name = get_class_name(class).unwrap_or_else(|| "Unknown".to_string());
     let dot_name = internal_name_to_dot(&class_name);
@@ -132,6 +205,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                     param_types: params,
                     param_names,
                     class_name: simple_name.clone(),
+                    annotations: Vec::new(),
                 }
             };
 
@@ -186,11 +260,27 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                 param_types: params,
                 param_names,
                 class_name: simple_name.clone(),
+                annotations: rendered_method_annotations(
+                    method,
+                    &method_name,
+                    &descriptor,
+                    &class_name,
+                ),
             }
         };
 
         method_decl.name = method_name;
         method_decl.access_flags = method.access_flags;
+        // Annotations render from pool-free short strings computed here,
+        // where the descriptor and flags are still at hand.
+        if method_decl.annotations.is_empty() {
+            method_decl.annotations = rendered_method_annotations(
+                method,
+                &get_method_name(class, method),
+                &descriptor,
+                &class_name,
+            );
+        }
         all_method_decls.push(method_decl);
     }
 
@@ -232,6 +322,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                 field_type,
                 access_flags: f.access_flags,
                 initial_value: None,
+                annotations: rendered_member_annotations(&f.annotations, f.deprecated),
             }
         })
         .collect();
@@ -246,6 +337,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
         super_name,
         is_enum,
         enum_constants,
+        annotations: rendered_member_annotations(&class.annotations, class.deprecated),
     }
 }
 
@@ -345,6 +437,29 @@ fn collect_imports(class: &ClassFile, this_class: &str) -> Vec<String> {
                 }
             }
             _ => {}
+        }
+    }
+
+    // Annotation types (plus enum/class value types inside them) also need
+    // imports; the render filter keeps only ones actually used in the body.
+    // Nested types (`com.foo.Outer$Inner`) import via their outer class.
+    let mut annotation_types = Vec::new();
+    for annotation in class
+        .annotations
+        .iter()
+        .chain(class.methods.iter().flat_map(|m| m.annotations.iter()))
+        .chain(class.fields.iter().flat_map(|f| f.annotations.iter()))
+    {
+        annotation_types.extend(annotation.referenced_types());
+    }
+    for dotted in annotation_types {
+        let outer = dotted.split('$').next().unwrap_or(&dotted).to_string();
+        if outer != this_dot
+            && !outer.starts_with("java.lang.")
+            && Some(outer.as_str()) != this_pkg
+            && outer.contains('.')
+        {
+            imports.push(outer);
         }
     }
 

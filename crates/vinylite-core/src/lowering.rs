@@ -5620,6 +5620,9 @@ pub fn lower_method_to_ast(
         param_types: params,
         param_names,
         class_name: this_class.replace('/', "."),
+        // Filled in by the caller (lib.rs), which owns the constant pool
+        // view needed for annotation rendering.
+        annotations: Vec::new(),
     }
 }
 
