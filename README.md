@@ -92,13 +92,13 @@ Vinylite emits one `.java` per classfile including every nested/anonymous
 class; CFR inlines most anonymous classes into their parent and skips
 `module-info`, so file counts differ by design.
 
-Known output gaps vs CFR (measured on the same jars): try-with-resources
-degrades to expanded close/suppress code in complex suppression chains,
-and enum constant bodies with method overrides render better in CFR.
-Speed and robustness (zero panics across the corpora, per-class panic
-isolation) are Vinylite's current strengths. Try/catch coverage on
-commons-lang3: 80 try blocks vs CFR's 89; multi-catch and finally are
-reconstructed.
+Known output gaps vs CFR (measured on the same jars): deeply nested
+suppression chains still expand, and enum constant bodies with method
+overrides render better in CFR. Speed and robustness (zero panics across
+the corpora, per-class panic isolation) are Vinylite's current strengths.
+Try/catch coverage on commons-lang3: 77 try + 3 try-with-resources
+blocks vs CFR's 89; multi-catch, finally and plain TWR shapes are
+reconstructed canonically.
 
 ## Known limitations
 
