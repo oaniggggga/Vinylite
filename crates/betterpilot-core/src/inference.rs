@@ -323,13 +323,13 @@ pub fn infer_types(
 
     // Final locals = best snapshot from the method body
     let mut final_locals = initial_locals.clone();
-    for i in 0..max_locals {
+    for (i, slot) in final_locals.iter_mut().enumerate().take(max_locals) {
         for locals in locals_at.values() {
             if let Some(ty) = locals.get(i)
                 && *ty != JavaType::Unknown
                 && *ty != JavaType::Null
             {
-                final_locals[i] = ty.clone();
+                *slot = ty.clone();
             }
         }
     }

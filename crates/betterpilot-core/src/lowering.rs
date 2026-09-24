@@ -206,6 +206,7 @@ struct StackMachine<'a> {
 }
 
 impl<'a> StackMachine<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         pool: &'a Pool,
         this_class: &str,
@@ -1862,7 +1863,6 @@ fn build_switch_node(
     if arms.is_empty() {
         return None;
     }
-    let mut consumed_through = consumed_through;
     // CFR-style break-to-push resolution (see try_distribute_join_values).
     // May relocate trailing join-rest after the switch (`post`).
     let mut post: Vec<(usize, Statement)> = Vec::new();
@@ -1931,6 +1931,7 @@ struct DistributeOutcome {
     post: Vec<(usize, Statement)>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_distribute_join_values(
     result: &[(usize, Statement)],
     consumed_through: usize,
@@ -3335,7 +3336,7 @@ fn simplify_condition_fixpoint(expr: &mut Expression) {
     }
 }
 
-fn simplify_conditions_recursive(stmts: &mut Vec<Statement>) {
+fn simplify_conditions_recursive(stmts: &mut [Statement]) {
     for stmt in stmts.iter_mut() {
         match stmt {
             Statement::If {
@@ -3388,7 +3389,7 @@ fn java_type_display(ty: &crate::inference::JavaType) -> Option<String> {
 /// Patch `VarDecl` types using the forward inference environment plus
 /// boolean usage: a local used as a bare `if`/`while` condition is boolean.
 fn apply_inferred_types(
-    stmts: &mut Vec<Statement>,
+    stmts: &mut [Statement],
     env: &crate::inference::TypeEnvironment,
     slot_names: &[String],
 ) {
@@ -3467,7 +3468,7 @@ fn collect_bare_names_in_expr(expr: &Expression, out: &mut std::collections::Has
 }
 
 fn apply_types_recursive(
-    stmts: &mut Vec<Statement>,
+    stmts: &mut [Statement],
     name_types: &HashMap<String, String>,
     bare_conditions: &std::collections::HashSet<String>,
 ) {
@@ -3673,7 +3674,7 @@ fn rename_var_in_expr(expr: &mut Expression, old_name: &str, new_name: &str) {
 }
 
 fn convert_assigns_to_var_decls_recursive(
-    stmts: &mut Vec<Statement>,
+    stmts: &mut [Statement],
     declared_vars: &mut std::collections::HashSet<String>,
 ) {
     let mut i = 0;
@@ -3973,17 +3974,16 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
         };
 
         let is_has_next = match &stmts[i + 1] {
-            Statement::While { condition, .. } => {
-                if let Expression::Invoke {
-                    target: cond_target,
-                    ..
-                } = condition
-                {
-                    cond_target == &format!("{it_var}.hasNext")
-                        || cond_target == &format!("{it_var}.hasNext()")
-                } else {
-                    false
-                }
+            Statement::While {
+                condition:
+                    Expression::Invoke {
+                        target: cond_target,
+                        ..
+                    },
+                ..
+            } => {
+                cond_target == &format!("{it_var}.hasNext")
+                    || cond_target == &format!("{it_var}.hasNext()")
             }
             _ => false,
         };

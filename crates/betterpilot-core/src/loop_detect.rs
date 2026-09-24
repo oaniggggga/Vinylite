@@ -72,7 +72,7 @@ pub fn detect_loops(cfg: &ControlFlowGraph) -> Vec<Loop> {
     }
 
     // Sort loops by depth (innermost first)
-    loops.sort_by(|a, b| b.blocks.len().cmp(&a.blocks.len()));
+    loops.sort_by_key(|loop_info| std::cmp::Reverse(loop_info.blocks.len()));
 
     loops
 }
