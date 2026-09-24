@@ -1,6 +1,9 @@
-# betterpilot
+# Vinylite
 
-Recovery-first JVM classfile decompiler in Rust (CFR/Vineflower direction).
+Recovery-first JVM classfile decompiler in Rust ? in the spirit of CFR and Vineflower.
+
+It turns JVM bytecode back into readable Java and is built to survive malformed,
+obfuscated, and partially corrupted classfiles instead of giving up on them.
 
 ## What it does today
 
@@ -27,11 +30,11 @@ Recovery-first JVM classfile decompiler in Rust (CFR/Vineflower direction).
 
 ## Install
 
-Grab a prebuilt binary from [Releases](https://github.com/oaniggggga/betterpilot/releases)
+Grab a prebuilt binary from [Releases](https://github.com/oaniggggga/vinylite/releases)
 (Linux / macOS x64 + ARM64 / Windows), or build from source:
 
 ```powershell
-cargo install --git https://github.com/oaniggggga/betterpilot
+cargo install --git https://github.com/oaniggggga/vinylite
 ```
 
 ## Example
@@ -39,7 +42,7 @@ cargo install --git https://github.com/oaniggggga/betterpilot
 Input bytecode of a trivial loop with an if/else inside (from `javac`):
 
 ```java
-// betterpilot output
+// vinylite output
 public class SimpleTest {
     public static void main(String[] arg0) {
         StringBuilder var_1 = new StringBuilder();
@@ -65,8 +68,8 @@ A stable Rust toolchain is enough (no C compiler needed).
 
 ```powershell
 cargo test --workspace
-cargo run -p betterpilot-cli -- path\to\Example.class
-cargo run -p betterpilot-cli -- app.jar -o out/
+cargo run -p vinylite-cli -- path\to\Example.class
+cargo run -p vinylite-cli -- app.jar -o out/
 ```
 
 Single class prints to stdout; `-o` writes a file, directory, or archive

@@ -3,7 +3,7 @@
 //! unit tests on synthetic bytecode miss (emit ordering, statement
 //! splicing, renderer drift).
 
-use betterpilot_core::decompile_class;
+use vinylite_core::decompile_class;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));

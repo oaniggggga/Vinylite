@@ -3,8 +3,8 @@
 **/*.rs.bk
 
 # Build artifacts and binaries
-betterpilot
-betterpilot.exe
+vinylite
+vinylite.exe
 *.pdb
 
 # Test output and scratch

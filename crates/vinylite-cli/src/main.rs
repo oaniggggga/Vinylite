@@ -3,13 +3,13 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use betterpilot_core::{
+use vinylite_core::{
     build_class_decl, decompile_class, deobfuscate_name, inspect_class, parse_jar,
 };
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-#[command(name = "betterpilot")]
+#[command(name = "vinylite")]
 #[command(about = "Recovery-first JVM classfile decompiler prototype")]
 struct Args {
     #[arg(value_name = "INPUT")]
@@ -42,7 +42,7 @@ fn main() {
     }
 }
 
-fn print_diagnostics(diagnostics: &[betterpilot_core::Diagnostic]) {
+fn print_diagnostics(diagnostics: &[vinylite_core::Diagnostic]) {
     let mut seen = std::collections::HashSet::new();
     let mut suppressed = 0u32;
     for diagnostic in diagnostics {
@@ -139,8 +139,8 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
                 .iter()
                 .skip(1)
                 .find_map(|cp_entry| match cp_entry {
-                    betterpilot_core::recovery::Recoverable::Present(
-                        betterpilot_core::classfile::ConstantPoolEntry::Class { name_index },
+                    vinylite_core::recovery::Recoverable::Present(
+                        vinylite_core::classfile::ConstantPoolEntry::Class { name_index },
                     ) => get_utf8_from_pool(&class.constant_pool, *name_index),
                     _ => None,
                 })
@@ -245,11 +245,11 @@ fn write_folder(dir: &Path, files: &[(String, String)]) {
 }
 
 fn get_inner_class_full_name(
-    class: &betterpilot_core::ClassFile,
+    class: &vinylite_core::ClassFile,
     class_index: u16,
 ) -> Option<String> {
-    use betterpilot_core::classfile::ConstantPoolEntry;
-    use betterpilot_core::recovery::Recoverable;
+    use vinylite_core::classfile::ConstantPoolEntry;
+    use vinylite_core::recovery::Recoverable;
     match class.constant_pool.get(class_index as usize) {
         Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) => {
             match class.constant_pool.get(*name_index as usize) {
@@ -261,9 +261,9 @@ fn get_inner_class_full_name(
     }
 }
 
-fn get_inner_class_name(class: &betterpilot_core::ClassFile, name_index: u16) -> Option<String> {
-    use betterpilot_core::classfile::ConstantPoolEntry;
-    use betterpilot_core::recovery::Recoverable;
+fn get_inner_class_name(class: &vinylite_core::ClassFile, name_index: u16) -> Option<String> {
+    use vinylite_core::classfile::ConstantPoolEntry;
+    use vinylite_core::recovery::Recoverable;
     match class.constant_pool.get(name_index as usize) {
         Some(Recoverable::Present(ConstantPoolEntry::Utf8(name))) => Some(name.clone()),
         _ => None,
@@ -271,14 +271,14 @@ fn get_inner_class_name(class: &betterpilot_core::ClassFile, name_index: u16) ->
 }
 
 fn get_utf8_from_pool(
-    pool: &[betterpilot_core::recovery::Recoverable<
-        betterpilot_core::classfile::ConstantPoolEntry,
+    pool: &[vinylite_core::recovery::Recoverable<
+        vinylite_core::classfile::ConstantPoolEntry,
     >],
     index: u16,
 ) -> Option<String> {
     match pool.get(index as usize) {
-        Some(betterpilot_core::recovery::Recoverable::Present(
-            betterpilot_core::classfile::ConstantPoolEntry::Utf8(s),
+        Some(vinylite_core::recovery::Recoverable::Present(
+            vinylite_core::classfile::ConstantPoolEntry::Utf8(s),
         )) => Some(s.clone()),
         _ => None,
     }
