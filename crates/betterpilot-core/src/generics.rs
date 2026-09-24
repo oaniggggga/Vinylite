@@ -373,7 +373,8 @@ pub fn format_method_sig(sig: &MethodSignature) -> (String, Vec<String>, String)
 }
 
 /// Format a class signature as Java source.
-pub fn format_class_sig(sig: &ClassSignature) -> (String, String, Vec<String>) {    let type_params = if sig.type_params.is_empty() {
+pub fn format_class_sig(sig: &ClassSignature) -> (String, String, Vec<String>) {
+    let type_params = if sig.type_params.is_empty() {
         String::new()
     } else {
         let params: Vec<String> = sig
@@ -429,7 +430,10 @@ pub fn generic_field_type(descriptor: &str, signature: Option<&str>) -> String {
 
 /// Resolve the superclass display name, preferring the generic class
 /// `Signature` (e.g. `Enum<Xenon>`) when present.
-pub fn generic_super_name(erased_dotted: Option<String>, class_signature: Option<&str>) -> Option<String> {
+pub fn generic_super_name(
+    erased_dotted: Option<String>,
+    class_signature: Option<&str>,
+) -> Option<String> {
     if let Some(sig) = class_signature
         && let Some(parsed) = parse_class_signature(sig)
     {

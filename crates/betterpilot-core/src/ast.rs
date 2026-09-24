@@ -226,7 +226,11 @@ impl ClassDecl {
         // Render fields
         let mut rendered_field_count = 0;
         for field in &self.fields {
-            if self.is_enum && (field.name.starts_with('$') || field.name == "ENUM$VALUES" || field.name == "INSTANCE") {
+            if self.is_enum
+                && (field.name.starts_with('$')
+                    || field.name == "ENUM$VALUES"
+                    || field.name == "INSTANCE")
+            {
                 continue;
             }
             body.push_str("    ");
@@ -377,7 +381,11 @@ fn render_statement(stmt: &Statement, indent: usize) -> String {
             out.push_str(&render_expression_at(value, indent));
             out.push_str(";\n");
         }
-        Statement::VarDecl { target, var_type, value } => {
+        Statement::VarDecl {
+            target,
+            var_type,
+            value,
+        } => {
             if target.starts_with('$') {
                 return out;
             }
@@ -546,11 +554,9 @@ fn short_type(ty: &str) -> String {
     let mut run_start: Option<usize> = None;
 
     let bytes_len = ty.len();
-    let flush = |out: &mut String, run: &str| {
-        match run.rsplit('.').next() {
-            Some(short) => out.push_str(short),
-            None => out.push_str(run),
-        }
+    let flush = |out: &mut String, run: &str| match run.rsplit('.').next() {
+        Some(short) => out.push_str(short),
+        None => out.push_str(run),
     };
 
     let mut i = 0;
@@ -675,7 +681,7 @@ fn render_expression_at(expr: &Expression, indent: usize) -> String {
             format!("{op_str}{rendered}")
         }
         Expression::New { class, args } => {
-            let rendered_args: Vec<String> = args.iter().map(|a| re(a)).collect();
+            let rendered_args: Vec<String> = args.iter().map(&re).collect();
             format!("new {}({})", class, rendered_args.join(", "))
         }
         Expression::NewArray { element_type, size } => {
@@ -723,7 +729,7 @@ fn render_expression_at(expr: &Expression, indent: usize) -> String {
             )
         }
         Expression::Invoke { target, args } => {
-            let rendered_args: Vec<String> = args.iter().map(|a| re(a)).collect();
+            let rendered_args: Vec<String> = args.iter().map(&re).collect();
             format!("{}({})", target, rendered_args.join(", "))
         }
         Expression::Lambda { params, body } => {
@@ -738,13 +744,17 @@ fn render_expression_at(expr: &Expression, indent: usize) -> String {
                 if let Statement::Return(Some(expr)) = &body[0] {
                     format!("({param_list}) -> {}", re(expr))
                 } else {
-                    let body_strs: Vec<String> =
-                        body.iter().map(|s| render_statement(s, inner_indent)).collect();
+                    let body_strs: Vec<String> = body
+                        .iter()
+                        .map(|s| render_statement(s, inner_indent))
+                        .collect();
                     format!("({param_list}) -> {{\n{}{}}}", body_strs.join(""), pad)
                 }
             } else {
-                let body_strs: Vec<String> =
-                    body.iter().map(|s| render_statement(s, inner_indent)).collect();
+                let body_strs: Vec<String> = body
+                    .iter()
+                    .map(|s| render_statement(s, inner_indent))
+                    .collect();
                 format!("({param_list}) -> {{\n{}{}}}", body_strs.join(""), pad)
             }
         }
@@ -805,12 +815,10 @@ mod tests {
             fields: vec![],
             methods: vec![MethodDecl {
                 name: "getItems".to_string(),
-                statements: vec![
-                    Statement::Return(Some(Expression::New {
-                        class: "List".to_string(),
-                        args: vec![],
-                    })),
-                ],
+                statements: vec![Statement::Return(Some(Expression::New {
+                    class: "List".to_string(),
+                    args: vec![],
+                }))],
                 access_flags: 0x0001,
                 return_type: "int".to_string(),
                 param_types: vec![],
@@ -837,10 +845,7 @@ mod tests {
         let class = ClassDecl {
             name: "Repo".to_string(),
             package: None,
-            imports: vec![
-                "java.util.List".to_string(),
-                "java.lang.Enum".to_string(),
-            ],
+            imports: vec!["java.util.List".to_string(), "java.lang.Enum".to_string()],
             fields: vec![FieldDecl {
                 name: "items".to_string(),
                 field_type: "java.util.List<java.lang.String>".to_string(),

@@ -289,10 +289,25 @@ mod tests {
         // 0: iconst_0 → 1: ifeq 4 (exit) → 2: iinc → 3: goto 1 → 4: return
         let instructions = vec![
             instr(0, InstructionKind::Iconst(0)),
-            instr(1, InstructionKind::If { opcode: 0x99, target: 4 }),
-            instr(2, InstructionKind::Iinc { index: 1, amount: 1 }),
+            instr(
+                1,
+                InstructionKind::If {
+                    opcode: 0x99,
+                    target: 4,
+                },
+            ),
+            instr(
+                2,
+                InstructionKind::Iinc {
+                    index: 1,
+                    amount: 1,
+                },
+            ),
             instr(3, InstructionKind::Goto(1)),
-            instr(4, InstructionKind::Return(crate::bytecode::ReturnType::Void)),
+            instr(
+                4,
+                InstructionKind::Return(crate::bytecode::ReturnType::Void),
+            ),
         ];
         let cfg = ControlFlowGraph::build_from_instructions(&instructions);
         let loops = detect_loops(&cfg);

@@ -20,7 +20,10 @@ impl ControlFlowGraph {
     /// entry points (exception handler pcs). Used to drop statically dead
     /// trap code (e.g. unreachable `athrow`s obfuscators plant between
     /// switch arms) before lowering — while keeping handler bodies alive.
-    pub fn reachable_offsets(&self, extra_entry_offsets: &[usize]) -> std::collections::HashSet<usize> {
+    pub fn reachable_offsets(
+        &self,
+        extra_entry_offsets: &[usize],
+    ) -> std::collections::HashSet<usize> {
         use std::collections::HashSet;
         let mut seen_blocks = vec![false; self.blocks.len()];
         let mut worklist: Vec<usize> = Vec::new();

@@ -94,10 +94,10 @@ fn verification_to_java(
         }
         VerificationType::Object(idx_str) => {
             // Parse "#N" format we stored during parsing
-            if let Some(idx_str) = idx_str.strip_prefix('#') {
-                if let Ok(idx) = idx_str.parse::<u16>() {
-                    return resolve_class_type(pool, idx);
-                }
+            if let Some(idx_str) = idx_str.strip_prefix('#')
+                && let Ok(idx) = idx_str.parse::<u16>()
+            {
+                return resolve_class_type(pool, idx);
             }
             JavaType::Object(idx_str.clone())
         }
@@ -209,10 +209,10 @@ pub fn infer_types(
 
     // Seed from local variable metadata (name/debug info takes precedence for names)
     for (&idx, m_vec) in &local_meta {
-        if let Some(m) = m_vec.first() {
-            if let Some(ref ty) = m.ty {
-                initial_locals[idx as usize] = ty.clone();
-            }
+        if let Some(m) = m_vec.first()
+            && let Some(ref ty) = m.ty
+        {
+            initial_locals[idx as usize] = ty.clone();
         }
     }
 
@@ -300,25 +300,23 @@ pub fn infer_types(
 
         // Propagate to successors
         // 1. Fallthrough
-        if ins.kind.has_fallthrough() {
-            if let Some(&next_idx) = offset_map.get(&next_offset) {
-                if !visited[next_idx] {
-                    // Merge locals
-                    merge_locals_into(&mut locals_at, next_offset, &locals, max_locals);
-                    worklist.push(next_idx);
-                }
-            }
+        if ins.kind.has_fallthrough()
+            && let Some(&next_idx) = offset_map.get(&next_offset)
+            && !visited[next_idx]
+        {
+            // Merge locals
+            merge_locals_into(&mut locals_at, next_offset, &locals, max_locals);
+            worklist.push(next_idx);
         }
 
         // 2. Branch targets
         for target in ins.kind.branch_targets() {
-            if target >= 0 {
-                if let Some(&target_idx) = offset_map.get(&(target as usize)) {
-                    if !visited[target_idx] {
-                        merge_locals_into(&mut locals_at, target as usize, &locals, max_locals);
-                        worklist.push(target_idx);
-                    }
-                }
+            if target >= 0
+                && let Some(&target_idx) = offset_map.get(&(target as usize))
+                && !visited[target_idx]
+            {
+                merge_locals_into(&mut locals_at, target as usize, &locals, max_locals);
+                worklist.push(target_idx);
             }
         }
     }
@@ -327,10 +325,11 @@ pub fn infer_types(
     let mut final_locals = initial_locals.clone();
     for i in 0..max_locals {
         for locals in locals_at.values() {
-            if let Some(ty) = locals.get(i) {
-                if *ty != JavaType::Unknown && *ty != JavaType::Null {
-                    final_locals[i] = ty.clone();
-                }
+            if let Some(ty) = locals.get(i)
+                && *ty != JavaType::Unknown
+                && *ty != JavaType::Null
+            {
+                final_locals[i] = ty.clone();
             }
         }
     }
@@ -764,7 +763,8 @@ fn erased_display_to_type(display: &str) -> Option<JavaType> {
     }
 }
 
-fn descriptor_to_type(desc: Option<&str>) -> Option<JavaType> {    let desc = desc?;
+fn descriptor_to_type(desc: Option<&str>) -> Option<JavaType> {
+    let desc = desc?;
     if desc.is_empty() {
         return None;
     }
@@ -801,28 +801,26 @@ fn cp_utf8(pool: &[Recoverable<ConstantPoolEntry>], index: u16) -> Option<String
 
 /// Get the type of a local variable at a specific bytecode offset.
 pub fn get_local_type(env: &TypeEnvironment, offset: usize, index: u16) -> JavaType {
-    if let Some(meta_vec) = env.local_meta.get(&index) {
-        if let Some(meta) = meta_vec.iter().find(|m| {
+    if let Some(meta_vec) = env.local_meta.get(&index)
+        && let Some(meta) = meta_vec.iter().find(|m| {
             offset >= m.start_pc as usize && offset < (m.start_pc as usize + m.length as usize)
-        }) {
-            if let Some(ref ty) = meta.ty {
-                return ty.clone();
-            }
-        }
+        })
+        && let Some(ref ty) = meta.ty
+    {
+        return ty.clone();
     }
     // Try locals_at snapshot
-    if let Some(locals) = env.locals_at.get(&offset) {
-        if let Some(ty) = locals.get(index as usize) {
-            if *ty != JavaType::Unknown {
-                return ty.clone();
-            }
-        }
+    if let Some(locals) = env.locals_at.get(&offset)
+        && let Some(ty) = locals.get(index as usize)
+        && *ty != JavaType::Unknown
+    {
+        return ty.clone();
     }
     // Fall back to final snapshot
-    if let Some(ty) = env.locals.get(index as usize) {
-        if *ty != JavaType::Unknown {
-            return ty.clone();
-        }
+    if let Some(ty) = env.locals.get(index as usize)
+        && *ty != JavaType::Unknown
+    {
+        return ty.clone();
     }
     JavaType::Unknown
 }
@@ -836,16 +834,14 @@ pub fn get_local_name(
     offset: usize,
 ) -> String {
     // Check debug info first
-    if let Some(meta_vec) = env.local_meta.get(&index) {
-        if let Some(meta) = meta_vec.iter().find(|m| {
+    if let Some(meta_vec) = env.local_meta.get(&index)
+        && let Some(meta) = meta_vec.iter().find(|m| {
             offset >= m.start_pc as usize && offset < (m.start_pc as usize + m.length as usize)
-        }) {
-            if let Some(ref name) = meta.name {
-                if !name.is_empty() {
-                    return name.clone();
-                }
-            }
-        }
+        })
+        && let Some(ref name) = meta.name
+        && !name.is_empty()
+    {
+        return name.clone();
     }
     // Check if it's a parameter
     let start = if is_static { 0 } else { 1 };

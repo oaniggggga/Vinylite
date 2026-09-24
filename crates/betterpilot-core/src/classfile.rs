@@ -27,7 +27,6 @@ pub struct FieldInfo {
     pub signature: Option<String>,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct BootstrapMethodInfo {
     pub method_handle_index: u16,
@@ -517,8 +516,7 @@ impl<'a> ClassFileParser<'a> {
                         local_variable_table = self.parse_local_variable_table(attr_length);
                     }
                     Some("LocalVariableTypeTable") => {
-                        local_variable_type_table =
-                            self.parse_local_variable_type_table();
+                        local_variable_type_table = self.parse_local_variable_type_table();
                     }
                     Some("StackMapTable") => {
                         stack_map_table = self.parse_stack_map_table(attr_length);
@@ -836,7 +834,11 @@ impl<'a> ClassFileParser<'a> {
     fn parse_class_attributes(
         &mut self,
         constant_pool: &[Recoverable<ConstantPoolEntry>],
-    ) -> (Vec<InnerClassInfo>, Vec<BootstrapMethodInfo>, Option<String>) {
+    ) -> (
+        Vec<InnerClassInfo>,
+        Vec<BootstrapMethodInfo>,
+        Option<String>,
+    ) {
         // After methods, the class attributes section follows:
         //   attributes_count: u16
         //   attributes[attributes_count]: each has name_index(u16), length(u32), info(bytes)

@@ -354,14 +354,11 @@ impl<'a> StackMachine<'a> {
                     let bm = &self.bootstrap_methods[bm_idx];
                     (bm.method_handle_index, bm.arguments.clone())
                 };
-                if let Some((bm_class, bm_method, _)) =
-                    self.resolve_method_handle(bm_handle)
-                {
+                if let Some((bm_class, bm_method, _)) = self.resolve_method_handle(bm_handle) {
                     // `String s = a + b;` compiles to StringConcatFactory
                     // invokedynamic — fold it back to `+` like CFR does.
                     if bm_class == "java.lang.invoke.StringConcatFactory"
-                        && (bm_method == "makeConcat"
-                            || bm_method == "makeConcatWithConstants")
+                        && (bm_method == "makeConcat" || bm_method == "makeConcatWithConstants")
                     {
                         let bm_view = crate::classfile::BootstrapMethodInfo {
                             method_handle_index: bm_handle,
@@ -384,8 +381,7 @@ impl<'a> StackMachine<'a> {
                     if bm_args.len() >= 2 {
                         let impl_handle_idx = bm_args[1];
                         if let Some(impl_method) = self.resolve_method_handle(impl_handle_idx) {
-                            let lambda_body =
-                                self.find_lambda_body(&impl_method.0, &impl_method.1);
+                            let lambda_body = self.find_lambda_body(&impl_method.0, &impl_method.1);
                             if let Some(body) = lambda_body {
                                 let _args = self.pop_n(param_count);
                                 let mut body_locals = Vec::new();
@@ -401,7 +397,10 @@ impl<'a> StackMachine<'a> {
                                     .into_iter()
                                     .enumerate()
                                     .map(|(i, ty)| {
-                                        let name = body_locals.get(i).cloned().unwrap_or_else(|| format!("arg{i}"));
+                                        let name = body_locals
+                                            .get(i)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("arg{i}"));
                                         (ty, name)
                                     })
                                     .collect();
@@ -416,18 +415,22 @@ impl<'a> StackMachine<'a> {
                             } else {
                                 // Can't find the synthetic body — emit a lambda that calls the method directly
                                 let args = self.pop_n(param_count);
-                                let target = if !args.is_empty() && matches!(args[0], Expression::This) {
-                                    "this".to_string()
-                                } else {
-                                    short_name(&impl_method.0)
-                                };
+                                let target =
+                                    if !args.is_empty() && matches!(args[0], Expression::This) {
+                                        "this".to_string()
+                                    } else {
+                                        short_name(&impl_method.0)
+                                    };
                                 let invoke = Expression::Invoke {
                                     target: if target == "this" || target.is_empty() {
                                         impl_method.1.clone()
                                     } else {
                                         format!("{}.{}", target, impl_method.1)
                                     },
-                                    args: args.into_iter().skip(if target == "this" { 1 } else { 0 }).collect(),
+                                    args: args
+                                        .into_iter()
+                                        .skip(if target == "this" { 1 } else { 0 })
+                                        .collect(),
                                 };
                                 self.push(Expression::Lambda {
                                     params: vec![],
@@ -447,13 +450,21 @@ impl<'a> StackMachine<'a> {
         cast_boolean_args(&mut args, &params);
         if desc.ends_with(")V") {
             let invoke = Expression::Invoke {
-                target: if short.is_empty() { method.clone() } else { format!("{short}.{method}") },
+                target: if short.is_empty() {
+                    method.clone()
+                } else {
+                    format!("{short}.{method}")
+                },
                 args,
             };
             self.emit(Statement::Expression(invoke));
         } else {
             let invoke = Expression::Invoke {
-                target: if short.is_empty() { method.clone() } else { format!("{short}.{method}") },
+                target: if short.is_empty() {
+                    method.clone()
+                } else {
+                    format!("{short}.{method}")
+                },
                 args,
             };
             self.push(invoke);
@@ -633,9 +644,9 @@ impl<'a> StackMachine<'a> {
             Some(Recoverable::Present(ConstantPoolEntry::Double(v))) => {
                 Some(Expression::ConstDouble(f64::from_bits(*v)))
             }
-            Some(Recoverable::Present(ConstantPoolEntry::String { .. })) => {
-                self.cp_constant_string(cp_index).map(Expression::ConstString)
-            }
+            Some(Recoverable::Present(ConstantPoolEntry::String { .. })) => self
+                .cp_constant_string(cp_index)
+                .map(Expression::ConstString),
             Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) => {
                 match self.pool.get(*name_index as usize) {
                     Some(Recoverable::Present(ConstantPoolEntry::Utf8(name))) => Some(
@@ -732,7 +743,8 @@ impl<'a> StackMachine<'a> {
                         }
                     } else if let Some(top) = self.stack.last().cloned() {
                         self.stack.push(top);
-            }        }
+                    }
+                }
                 crate::bytecode::StackOp::DupX1 if self.stack.len() >= 2 => {
                     let top = self.stack.pop().unwrap();
                     let below = self.stack.pop().unwrap();
@@ -761,7 +773,11 @@ impl<'a> StackMachine<'a> {
                     // A discard is not a no-op: `sb.append("x"); pop` must keep
                     // the call. Emit the popped expression as a statement when
                     // it has side effects; pure values are dropped silently.
-                    let count = if matches!(op, crate::bytecode::StackOp::Pop2) { 2 } else { 1 };
+                    let count = if matches!(op, crate::bytecode::StackOp::Pop2) {
+                        2
+                    } else {
+                        1
+                    };
                     let mut popped = Vec::with_capacity(count);
                     for _ in 0..count {
                         if let Some(StackValue::Expr(expr)) = self.stack.pop() {
@@ -856,7 +872,8 @@ impl<'a> StackMachine<'a> {
                     then_body: vec![],
                     else_body: None,
                 });
-                self.if_targets.insert(self.current_offset, *target as usize);
+                self.if_targets
+                    .insert(self.current_offset, *target as usize);
             }
             InstructionKind::Goto(target) => {
                 self.emit(Statement::Expression(Expression::Unknown(format!(
@@ -917,10 +934,13 @@ impl<'a> StackMachine<'a> {
                             // Pop args first, then check the receiver
                             let mut args = self.pop_n(param_count);
                             let mut receiver = self.pop();
-                            
+
                             // Fix for MethodRef or Lambda being popped as receiver instead of argument
                             // e.g. new Thread(this::run) — the captured ref is misaligned on stack
-                            while matches!(receiver, Expression::MethodRef(_, _) | Expression::Lambda { .. }) {
+                            while matches!(
+                                receiver,
+                                Expression::MethodRef(_, _) | Expression::Lambda { .. }
+                            ) {
                                 let mut new_args = vec![receiver];
                                 new_args.extend(args);
                                 args = new_args;
@@ -973,7 +993,10 @@ impl<'a> StackMachine<'a> {
                             let mut receiver = self.pop();
 
                             // Fix for MethodRef or Lambda being popped as receiver instead of argument
-                            while matches!(receiver, Expression::MethodRef(_, _) | Expression::Lambda { .. }) {
+                            while matches!(
+                                receiver,
+                                Expression::MethodRef(_, _) | Expression::Lambda { .. }
+                            ) {
                                 let mut new_args = vec![receiver];
                                 new_args.extend(args);
                                 args = new_args;
@@ -999,10 +1022,7 @@ impl<'a> StackMachine<'a> {
                                 } else {
                                     format!("{}.{}", receiver_str, method)
                                 };
-                                let invoke = Expression::Invoke {
-                                    target,
-                                    args,
-                                };
+                                let invoke = Expression::Invoke { target, args };
                                 if desc.ends_with(")V") {
                                     self.emit(Statement::Expression(invoke));
                                 } else {
@@ -1147,9 +1167,7 @@ impl<'a> StackMachine<'a> {
                 }
                 sizes.reverse();
                 let size_str = sizes.join("][");
-                self.push(Expression::Unknown(format!(
-                    "new {base}[{size_str}]"
-                )));
+                self.push(Expression::Unknown(format!("new {base}[{size_str}]")));
             }
 
             // â”€â”€ Misc â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1470,7 +1488,10 @@ fn try_fold_builder_call(
 ) -> Option<Expression> {
     if method == "append" && args.len() == 1 {
         let (builder, mut parts) = match receiver {
-            Expression::New { class: new_class, args: new_args } => {
+            Expression::New {
+                class: new_class,
+                args: new_args,
+            } => {
                 if new_class != "StringBuilder" && new_class != "StringBuffer" {
                     return None;
                 }
@@ -1592,8 +1613,7 @@ fn fold_switches(
             // consumed range. (Insertions sit after `pos`, so pending
             // earlier-offset stubs keep valid positions in reverse order.)
             let drain_end = built.consumed_through.min(result.len());
-            let mut replacement: Vec<(usize, Statement)> =
-                Vec::with_capacity(built.post.len() + 1);
+            let mut replacement: Vec<(usize, Statement)> = Vec::with_capacity(built.post.len() + 1);
             // Placeholder offset for the node itself.
             replacement.push((stub.offset, built.stmt));
             replacement.extend(built.post);
@@ -1705,7 +1725,13 @@ fn slice_switch_arm(
             }
         }
     }
-    ArmSlice { body, breaks, broke_to, has_loop, stop: j }
+    ArmSlice {
+        body,
+        breaks,
+        broke_to,
+        has_loop,
+        stop: j,
+    }
 }
 
 /// True when `off` is the target of an `if` whose source is *outside*
@@ -1733,13 +1759,12 @@ fn build_switch_node(
     if by_target.is_empty() {
         return None;
     }
-    let default_off: Option<usize> = if stub.default_target >= 0
-        && (stub.default_target as usize) > stub.offset
-    {
-        Some(stub.default_target as usize)
-    } else {
-        None
-    };
+    let default_off: Option<usize> =
+        if stub.default_target >= 0 && (stub.default_target as usize) > stub.offset {
+            Some(stub.default_target as usize)
+        } else {
+            None
+        };
 
     // Arm order = target offset order (source order); default spliced in.
     let mut bounds: Vec<usize> = by_target.keys().copied().collect();
@@ -1780,7 +1805,12 @@ fn build_switch_node(
             keys.sort();
             // An empty default arm (default == join) carries no code — skip it.
             if !(keys.is_empty() && is_default) {
-                arms.push(SwitchArm { keys, is_default, body: Vec::new(), breaks: false });
+                arms.push(SwitchArm {
+                    keys,
+                    is_default,
+                    body: Vec::new(),
+                    breaks: false,
+                });
                 arm_bounds.push(*b);
                 raw_bodies.push(Vec::new());
                 arm_broke_to.push(None);
@@ -1803,14 +1833,11 @@ fn build_switch_node(
             continue;
         }
         // Recursively structure the arm body (nested loops/ifs/switches).
-        let structured: Vec<Statement> = restructure_control_flow(
-            slice.body.clone(),
-            if_targets,
-            switches,
-        )
-        .into_iter()
-        .map(|(_, s)| s)
-        .collect();
+        let structured: Vec<Statement> =
+            restructure_control_flow(slice.body.clone(), if_targets, switches)
+                .into_iter()
+                .map(|(_, s)| s)
+                .collect();
         let mut keys = by_target.get(b).cloned().unwrap_or_default();
         keys.sort();
         if debug {
@@ -1821,7 +1848,7 @@ fn build_switch_node(
         }
         arms.push(SwitchArm {
             keys,
-            is_default: is_default,
+            is_default,
             body: structured,
             breaks: slice.breaks,
         });
@@ -1938,15 +1965,16 @@ fn try_distribute_join_values(
                 | Statement::Return(Some(_))
         )
     {
-        join_site = Some(JoinSite::After { index: consumed_through });
+        join_site = Some(JoinSite::After {
+            index: consumed_through,
+        });
     }
     if join_site.is_none() && !arms.is_empty() {
         // Absorbed: the last arm falls through into the join store.
         // Unanimous convergence anchor: at least one arm must break to
         // the join, and all breaking arms must agree on its offset.
         let last = arms.len() - 1;
-        let mut targets_set: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
+        let mut targets_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for broke in arm_broke_to.iter().flatten() {
             targets_set.insert(*broke);
         }
@@ -1965,7 +1993,10 @@ fn try_distribute_join_values(
                         | Statement::VarDecl { value: Some(_), .. }
                         | Statement::Return(Some(_))
                 ) {
-                    join_site = Some(JoinSite::Absorbed { arm: last, stmt_index: k });
+                    join_site = Some(JoinSite::Absorbed {
+                        arm: last,
+                        stmt_index: k,
+                    });
                     break;
                 }
                 // A divergent or control statement before any store:
@@ -1984,16 +2015,30 @@ fn try_distribute_join_values(
     }
     let join_site = join_site?;
     if dist_debug {
-        eprintln!("[dist] site stub@{} disc={} join_off={} arms={} results={}", stub.offset,
+        eprintln!(
+            "[dist] site stub@{} disc={} join_off={} arms={} results={}",
+            stub.offset,
             crate::ast::render_expression_pub(&stub.discriminant),
             match &join_site {
-                JoinSite::After { index } => result.get(*index).map(|(o, _)| *o as i64).unwrap_or(-1),
-                JoinSite::Absorbed { arm, stmt_index } => raw_bodies.get(*arm).and_then(|r| r.get(*stmt_index)).map(|(o, _)| *o as i64).unwrap_or(-1),
+                JoinSite::After { index } =>
+                    result.get(*index).map(|(o, _)| *o as i64).unwrap_or(-1),
+                JoinSite::Absorbed { arm, stmt_index } => raw_bodies
+                    .get(*arm)
+                    .and_then(|r| r.get(*stmt_index))
+                    .map(|(o, _)| *o as i64)
+                    .unwrap_or(-1),
             },
-            arms.len(), stub.results.len());
+            arms.len(),
+            stub.results.len()
+        );
         for (n, arm) in arms.iter().enumerate() {
-            eprintln!("[dist]   arm={n} keys={:?} body_len={} breaks={} broke_to={:?}",
-                arm.keys, arm.body.len(), arm.breaks, arm_broke_to.get(n).copied().flatten());
+            eprintln!(
+                "[dist]   arm={n} keys={:?} body_len={} breaks={} broke_to={:?}",
+                arm.keys,
+                arm.body.len(),
+                arm.breaks,
+                arm_broke_to.get(n).copied().flatten()
+            );
         }
     }
 
@@ -2003,9 +2048,11 @@ fn try_distribute_join_values(
             let (off, stmt) = result.get(*index)?;
             let (target, value, is_return) = match stmt {
                 Statement::Assign { target, value } => (Some(target.clone()), value.clone(), false),
-                Statement::VarDecl { target, value: Some(value), .. } => {
-                    (Some(target.clone()), value.clone(), false)
-                }
+                Statement::VarDecl {
+                    target,
+                    value: Some(value),
+                    ..
+                } => (Some(target.clone()), value.clone(), false),
                 Statement::Return(Some(value)) => (None, value.clone(), true),
                 _ => return None,
             };
@@ -2015,7 +2062,11 @@ fn try_distribute_join_values(
             let (off, stmt) = raw_bodies.get(*arm)?.get(*stmt_index)?.clone();
             let (target, value, is_return) = match stmt {
                 Statement::Assign { target, value } => (Some(target), value, false),
-                Statement::VarDecl { target, value: Some(value), .. } => (Some(target), value, false),
+                Statement::VarDecl {
+                    target,
+                    value: Some(value),
+                    ..
+                } => (Some(target), value, false),
                 Statement::Return(Some(value)) => (None, value, true),
                 _ => return None,
             };
@@ -2024,8 +2075,11 @@ fn try_distribute_join_values(
     };
     // Only plain locals can be re-targeted soundly.
     if dist_debug {
-        eprintln!("[dist] extracted target={:?} value={} ret={is_return}",
-            target, crate::ast::render_expression_pub(&value));
+        eprintln!(
+            "[dist] extracted target={:?} value={} ret={is_return}",
+            target,
+            crate::ast::render_expression_pub(&value)
+        );
     }
     if let Some(ref t) = target
         && (t.contains('.') || t.contains('[') || t.starts_with('$') || t == "this")
@@ -2037,7 +2091,10 @@ fn try_distribute_join_values(
     }
     if contains_empty_stack(&value) || !is_plain_join_value(&value) {
         if dist_debug {
-            eprintln!("[dist] abort bad value {}", crate::ast::render_expression_pub(&value));
+            eprintln!(
+                "[dist] abort bad value {}",
+                crate::ast::render_expression_pub(&value)
+            );
         }
         return None;
     }
@@ -2067,8 +2124,11 @@ fn try_distribute_join_values(
             None if !arm.breaks => {}
             _ => {
                 if dist_debug {
-                    eprintln!("[dist] abort unanimity arm={n} breaks={} broke_to={:?} join={join_off}",
-                        arm.breaks, arm_broke_to.get(n).copied().flatten());
+                    eprintln!(
+                        "[dist] abort unanimity arm={n} breaks={} broke_to={:?} join={join_off}",
+                        arm.breaks,
+                        arm_broke_to.get(n).copied().flatten()
+                    );
                 }
                 return None;
             }
@@ -2118,8 +2178,11 @@ fn try_distribute_join_values(
                 }
                 _ => {
                     if dist_debug {
-                        eprintln!("[dist] abort novalue arm={n} bound={} captured={:?}",
-                            arm_bounds[n + 1], captured.map(|v| v.len()));
+                        eprintln!(
+                            "[dist] abort novalue arm={n} bound={} captured={:?}",
+                            arm_bounds[n + 1],
+                            captured.map(|v| v.len())
+                        );
                     }
                     return None;
                 }
@@ -2141,14 +2204,10 @@ fn try_distribute_join_values(
             Vec::new()
         };
         let pre: Vec<(usize, Statement)> = raw[..(*stmt_index).min(raw.len())].to_vec();
-        let structured: Vec<Statement> = restructure_control_flow(
-            pre,
-            if_targets,
-            switches,
-        )
-        .into_iter()
-        .map(|(_, s)| s)
-        .collect();
+        let structured: Vec<Statement> = restructure_control_flow(pre, if_targets, switches)
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
         if let Some(last_arm) = arms.get_mut(*arm) {
             last_arm.body = structured;
             // Falls into the join position (relocated past the switch).
@@ -2163,30 +2222,45 @@ fn try_distribute_join_values(
     // Rewrite: append the store/return to each contributing arm.
     if dist_debug {
         let have = values.iter().filter(|v| v.is_some()).count();
-        eprintln!("[dist] stub@{} values={}/{}", stub.offset, have, values.len());
+        eprintln!(
+            "[dist] stub@{} values={}/{}",
+            stub.offset,
+            have,
+            values.len()
+        );
     }
     for (arm, val) in arms.iter_mut().zip(values.iter()) {
         if dist_debug && val.is_some() {
-            eprintln!("[dist] stub@{} arm keys={:?} gets store", stub.offset, arm.keys);
+            eprintln!(
+                "[dist] stub@{} arm keys={:?} gets store",
+                stub.offset, arm.keys
+            );
         }
     }
-    for (arm, val) in arms.iter_mut().zip(values.into_iter()) {
+    for (arm, val) in arms.iter_mut().zip(values) {
         let Some(val) = val else { continue };
         if is_return {
             arm.body.push(Statement::Return(Some(val)));
         } else if let Some(ref t) = target {
-            arm.body.push(Statement::Assign { target: t.clone(), value: val });
+            arm.body.push(Statement::Assign {
+                target: t.clone(),
+                value: val,
+            });
         }
     }
 
     match join_site {
         JoinSite::After { .. } => {
             // Drop the join statement itself.
-            Some(DistributeOutcome { consumed_through: consumed_through + 1, post: Vec::new() })
+            Some(DistributeOutcome {
+                consumed_through: consumed_through + 1,
+                post: Vec::new(),
+            })
         }
-        JoinSite::Absorbed { .. } => {
-            Some(DistributeOutcome { consumed_through, post })
-        }
+        JoinSite::Absorbed { .. } => Some(DistributeOutcome {
+            consumed_through,
+            post,
+        }),
     }
 }
 
@@ -2240,12 +2314,11 @@ fn restructure_control_flow(
 
                 if let Some(if_idx) = if_idx {
                     // Extract condition (its jump target is unused here).
-                    let cond =
-                        if let Statement::If { ref condition, .. } = result[if_idx].1 {
-                            condition.clone()
-                        } else {
-                            unreachable!()
-                        };
+                    let cond = if let Statement::If { ref condition, .. } = result[if_idx].1 {
+                        condition.clone()
+                    } else {
+                        unreachable!()
+                    };
 
                     // Keep (offset, statement) pairs so nested control flow
                     // can be structured recursively with offset lookups intact.
@@ -2363,10 +2436,11 @@ fn restructure_control_flow(
                 let then_raw: Vec<(usize, Statement)> = result[g + 1..else_end].to_vec();
 
                 // Structure both arms recursively (nested ifs/switches/loops).
-                let then_body: Vec<Statement> = restructure_control_flow(then_raw, if_targets, switches)
-                    .into_iter()
-                    .map(|(_, s)| s)
-                    .collect();
+                let then_body: Vec<Statement> =
+                    restructure_control_flow(then_raw, if_targets, switches)
+                        .into_iter()
+                        .map(|(_, s)| s)
+                        .collect();
                 let else_body_stmts: Vec<Statement> =
                     restructure_control_flow(else_raw, if_targets, switches)
                         .into_iter()
@@ -2499,40 +2573,40 @@ fn merge_guard_clauses(stmts: &mut Vec<Statement>) {
             then_body,
             else_body,
         } = &stmts[i]
+            && then_body.is_empty()
+            && else_body.is_none()
         {
-            if then_body.is_empty() && else_body.is_none() {
-                // This is an empty guard — merge with next guards
-                let mut combined_cond = negate_guard_cond(condition.clone());
-                let mut j = i + 1;
-                while j < stmts.len() {
-                    if let Statement::If {
-                        condition: inner_cond,
-                        then_body: inner_then,
-                        else_body: inner_else,
-                    } = &stmts[j]
-                    {
-                        if inner_then.is_empty() && inner_else.is_none() {
-                            combined_cond = Expression::Binary {
-                                left: Box::new(combined_cond),
-                                op: BinaryOp::BoolAnd,
-                                right: Box::new(negate_guard_cond(inner_cond.clone())),
-                            };
-                            j += 1;
-                        } else {
-                            break;
-                        }
+            // This is an empty guard — merge with next guards
+            let mut combined_cond = negate_guard_cond(condition.clone());
+            let mut j = i + 1;
+            while j < stmts.len() {
+                if let Statement::If {
+                    condition: inner_cond,
+                    then_body: inner_then,
+                    else_body: inner_else,
+                } = &stmts[j]
+                {
+                    if inner_then.is_empty() && inner_else.is_none() {
+                        combined_cond = Expression::Binary {
+                            left: Box::new(combined_cond),
+                            op: BinaryOp::BoolAnd,
+                            right: Box::new(negate_guard_cond(inner_cond.clone())),
+                        };
+                        j += 1;
                     } else {
                         break;
                     }
+                } else {
+                    break;
                 }
-                if j > i + 1 {
-                    let body: Vec<Statement> = stmts.drain(i + 1..j).collect();
-                    stmts[i] = Statement::If {
-                        condition: combined_cond,
-                        then_body: body,
-                        else_body: None,
-                    };
-                }
+            }
+            if j > i + 1 {
+                let body: Vec<Statement> = stmts.drain(i + 1..j).collect();
+                stmts[i] = Statement::If {
+                    condition: combined_cond,
+                    then_body: body,
+                    else_body: None,
+                };
             }
         }
         i += 1;
@@ -2600,7 +2674,11 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
     let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
     for stmt in stmts.drain(..) {
         match stmt {
-            Statement::If { condition, mut then_body, mut else_body } => {
+            Statement::If {
+                condition,
+                mut then_body,
+                mut else_body,
+            } => {
                 remove_dead_branches(&mut then_body);
                 if let Some(eb) = else_body.as_mut() {
                     remove_dead_branches(eb);
@@ -2610,10 +2688,17 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                 } else if is_const_true(&condition) {
                     out.extend(then_body);
                 } else {
-                    out.push(Statement::If { condition, then_body, else_body });
+                    out.push(Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    });
                 }
             }
-            Statement::While { condition, mut body } => {
+            Statement::While {
+                condition,
+                mut body,
+            } => {
                 remove_dead_branches(&mut body);
                 if is_const_false(&condition) {
                     // Dead loop — drop it entirely.
@@ -2626,20 +2711,43 @@ fn remove_dead_branches(stmts: &mut Vec<Statement>) {
                     out.push(Statement::While { condition, body });
                 }
             }
-            Statement::Switch { discriminant, mut arms } => {
+            Statement::Switch {
+                discriminant,
+                mut arms,
+            } => {
                 for arm in arms.iter_mut() {
                     remove_dead_branches(&mut arm.body);
                 }
                 out.push(Statement::Switch { discriminant, arms });
             }
-            Statement::ForEach { var_type, var_name, collection, mut body } => {
+            Statement::ForEach {
+                var_type,
+                var_name,
+                collection,
+                mut body,
+            } => {
                 remove_dead_branches(&mut body);
-                out.push(Statement::ForEach { var_type, var_name, collection, body });
+                out.push(Statement::ForEach {
+                    var_type,
+                    var_name,
+                    collection,
+                    body,
+                });
             }
-            Statement::TryCatch { mut try_body, catch_type, catch_var, mut catch_body } => {
+            Statement::TryCatch {
+                mut try_body,
+                catch_type,
+                catch_var,
+                mut catch_body,
+            } => {
                 remove_dead_branches(&mut try_body);
                 remove_dead_branches(&mut catch_body);
-                out.push(Statement::TryCatch { try_body, catch_type, catch_var, catch_body });
+                out.push(Statement::TryCatch {
+                    try_body,
+                    catch_type,
+                    catch_var,
+                    catch_body,
+                });
             }
             other => out.push(other),
         }
@@ -2705,7 +2813,11 @@ fn ensure_boolean_condition(expr: &mut Expression) {
 fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 ensure_boolean_condition(condition);
                 ensure_boolean_conditions_recursive(then_body);
                 if let Some(eb) = else_body {
@@ -2724,7 +2836,11 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
             Statement::ForEach { body, .. } => {
                 ensure_boolean_conditions_recursive(body);
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 ensure_boolean_conditions_recursive(try_body);
                 ensure_boolean_conditions_recursive(catch_body);
             }
@@ -2735,17 +2851,27 @@ fn ensure_boolean_conditions_recursive(stmts: &mut [Statement]) {
 
 /// Remove `if (cond) { }` blocks with empty bodies (decompilation artifacts)
 fn remove_empty_if_blocks(stmts: &mut Vec<Statement>) {
-    stmts.retain(|s| !matches!(s, Statement::If { then_body, else_body, .. }
-        if then_body.is_empty() && else_body.is_none()));
+    stmts.retain(|s| {
+        !matches!(s, Statement::If { then_body, else_body, .. }
+        if then_body.is_empty() && else_body.is_none())
+    });
     for stmt in stmts.iter_mut() {
         match stmt {
-            Statement::If { then_body, else_body, .. } => {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 remove_empty_if_blocks(then_body);
                 if let Some(body) = else_body {
                     remove_empty_if_blocks(body);
                 }
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 remove_empty_if_blocks(try_body);
                 remove_empty_if_blocks(catch_body);
             }
@@ -2786,7 +2912,8 @@ fn wrap_try_catch(
         .map(|e| e.handler_pc as usize)
         .collect();
 
-    let mut consumed_handler_pcs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut consumed_handler_pcs: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
 
     let mut result: Vec<Statement> = Vec::new();
     let mut i = 0;
@@ -2801,7 +2928,10 @@ fn wrap_try_catch(
         }
 
         // Check if this offset starts a try range (within first 25 bytes of start_pc)
-        if let Some(pos) = try_ranges.iter().position(|r| r.0 <= offset && offset < r.0 + 25 && offset < r.1) {
+        if let Some(pos) = try_ranges
+            .iter()
+            .position(|r| r.0 <= offset && offset < r.0 + 25 && offset < r.1)
+        {
             let (_try_start, try_end, _handler_pc, catch_type_idx) = try_ranges.remove(pos);
             // Collect try body: statements with offset in [try_start, try_end)
             let mut try_body: Vec<(usize, Statement)> = Vec::new();
@@ -2817,13 +2947,17 @@ fn wrap_try_catch(
             // Collect catch body starting at handler_pc if found
             let mut catch_body: Vec<(usize, Statement)> = Vec::new();
             let handler_offset = _handler_pc as usize;
-            let handler_pos = offset_stmts.iter().position(|(off, _)| *off == handler_offset);
+            let handler_pos = offset_stmts
+                .iter()
+                .position(|(off, _)| *off == handler_offset);
             if let Some(h_pos) = handler_pos {
                 let mut h_idx = h_pos;
                 while h_idx < offset_stmts.len() {
                     let (off, ref s) = offset_stmts[h_idx];
                     if h_idx != h_pos {
-                        if try_ranges.iter().any(|r| r.0 <= off && off < r.1) || handler_pcs.contains(&off) {
+                        if try_ranges.iter().any(|r| r.0 <= off && off < r.1)
+                            || handler_pcs.contains(&off)
+                        {
                             break;
                         }
                         if !stmt_references_exception(s) {
@@ -2851,14 +2985,14 @@ fn wrap_try_catch(
 
             let inner_table_try: Vec<_> = exception_table
                 .iter()
+                .filter(|&e| e.start_pc as usize > _try_start && (e.end_pc as usize) < try_end)
                 .cloned()
-                .filter(|e| e.start_pc as usize > _try_start && (e.end_pc as usize) < try_end)
                 .collect();
 
             let inner_table_catch: Vec<_> = exception_table
                 .iter()
+                .filter(|&e| e.start_pc as usize > handler_offset)
                 .cloned()
-                .filter(|e| e.start_pc as usize > handler_offset)
                 .collect();
 
             let try_body_lowered = if !inner_table_try.is_empty() {
@@ -2895,7 +3029,11 @@ fn wrap_try_catch(
         } else {
             let mut s = stmt.clone();
             match &mut s {
-                Statement::If { then_body, else_body, .. } => {
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
                     *then_body = wrap_try_catch_stmts(then_body.clone(), exception_table, pool);
                     if let Some(eb) = else_body {
                         *eb = wrap_try_catch_stmts(eb.clone(), exception_table, pool);
@@ -2906,8 +3044,11 @@ fn wrap_try_catch(
                 }
                 Statement::Switch { arms, .. } => {
                     for arm in arms {
-                        arm.body =
-                            wrap_try_catch_stmts(std::mem::take(&mut arm.body), exception_table, pool);
+                        arm.body = wrap_try_catch_stmts(
+                            std::mem::take(&mut arm.body),
+                            exception_table,
+                            pool,
+                        );
                     }
                 }
                 _ => {}
@@ -2928,11 +3069,7 @@ fn wrap_try_catch_stmts(
     if exception_table.is_empty() || stmts.is_empty() {
         return stmts;
     }
-    let offset_stmts: Vec<(usize, Statement)> = stmts
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| (i, s))
-        .collect();
+    let offset_stmts: Vec<(usize, Statement)> = stmts.into_iter().enumerate().collect();
     wrap_try_catch(offset_stmts, exception_table, pool)
 }
 
@@ -2940,14 +3077,18 @@ fn expr_references_var(expr: &Expression, var: &str) -> bool {
     match expr {
         Expression::Local(name) => name == var,
         Expression::FieldAccess { object, .. } => expr_references_var(object, var),
-        Expression::Binary { left, right, .. } => expr_references_var(left, var) || expr_references_var(right, var),
+        Expression::Binary { left, right, .. } => {
+            expr_references_var(left, var) || expr_references_var(right, var)
+        }
         Expression::Unary { operand, .. } => expr_references_var(operand, var),
         Expression::Cast { expr, .. } => expr_references_var(expr, var),
         Expression::InstanceOf { expr, .. } => expr_references_var(expr, var),
         Expression::New { args, .. } => args.iter().any(|a| expr_references_var(a, var)),
         Expression::Invoke { target, args } => {
-            target == var || target.starts_with(&format!("{var}.")) || args.iter().any(|a| expr_references_var(a, var))
-        },
+            target == var
+                || target.starts_with(&format!("{var}."))
+                || args.iter().any(|a| expr_references_var(a, var))
+        }
         Expression::Concat { parts, .. } => parts.iter().any(|p| expr_references_var(p, var)),
         _ => false,
     }
@@ -2965,7 +3106,11 @@ fn wrap_unwrapped_catch_statements(stmts: &mut Vec<Statement>) {
     let mut i = 0;
     while i < stmts.len() {
         match &mut stmts[i] {
-            Statement::If { then_body, else_body, .. } => {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 wrap_unwrapped_catch_statements(then_body);
                 if let Some(eb) = else_body {
                     wrap_unwrapped_catch_statements(eb);
@@ -2982,7 +3127,11 @@ fn wrap_unwrapped_catch_statements(stmts: &mut Vec<Statement>) {
             Statement::ForEach { body, .. } => {
                 wrap_unwrapped_catch_statements(body);
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 wrap_unwrapped_catch_statements(try_body);
                 wrap_unwrapped_catch_statements(catch_body);
             }
@@ -3034,13 +3183,17 @@ fn simplify_condition(expr: &mut Expression) -> bool {
         return true;
     }
     changed |= match expr {
-        Expression::Unary { op: UnaryOp::Not, operand } => {
+        Expression::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => {
             // !!x → x
-            if let Expression::Unary { op: UnaryOp::Not, operand: inner } = operand.as_mut() {
-                let inner = std::mem::replace(
-                    inner.as_mut(),
-                    Expression::ConstNull,
-                );
+            if let Expression::Unary {
+                op: UnaryOp::Not,
+                operand: inner,
+            } = operand.as_mut()
+            {
+                let inner = std::mem::replace(inner.as_mut(), Expression::ConstNull);
                 *expr = inner;
                 return true;
             }
@@ -3090,10 +3243,18 @@ fn simplify_condition(expr: &mut Expression) -> bool {
             {
                 let (other, is_zero, is_one) = if is_int_const(left, 0) || is_int_const(left, 1) {
                     let zero = is_int_const(left, 0);
-                    (std::mem::replace(right, Box::new(Expression::ConstNull)), zero, !zero)
+                    (
+                        std::mem::replace(right, Box::new(Expression::ConstNull)),
+                        zero,
+                        !zero,
+                    )
                 } else if is_int_const(right, 0) || is_int_const(right, 1) {
                     let zero = is_int_const(right, 0);
-                    (std::mem::replace(left, Box::new(Expression::ConstNull)), zero, !zero)
+                    (
+                        std::mem::replace(left, Box::new(Expression::ConstNull)),
+                        zero,
+                        !zero,
+                    )
                 } else {
                     return false;
                 };
@@ -3107,8 +3268,7 @@ fn simplify_condition(expr: &mut Expression) -> bool {
                     }
                     return false;
                 }
-                let positive = (*op == BinaryOp::Ne) == is_zero
-                    || (*op == BinaryOp::Eq) == is_one;
+                let positive = (*op == BinaryOp::Ne) == is_zero || (*op == BinaryOp::Eq) == is_one;
                 *expr = if positive {
                     *other
                 } else {
@@ -3148,7 +3308,10 @@ fn fold_const_condition(expr: &mut Expression) -> bool {
             }
             false
         }
-        Expression::Unary { op: UnaryOp::Not, operand } => {
+        Expression::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => {
             if let Expression::ConstInt(v) = operand.as_ref() {
                 let v = *v;
                 *expr = Expression::ConstInt(if v == 0 { 1 } else { 0 });
@@ -3175,7 +3338,11 @@ fn simplify_condition_fixpoint(expr: &mut Expression) {
 fn simplify_conditions_recursive(stmts: &mut Vec<Statement>) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 simplify_condition_fixpoint(condition);
                 simplify_conditions_recursive(then_body);
                 if let Some(eb) = else_body {
@@ -3193,7 +3360,11 @@ fn simplify_conditions_recursive(stmts: &mut Vec<Statement>) {
                 }
             }
             Statement::ForEach { body, .. } => simplify_conditions_recursive(body),
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 simplify_conditions_recursive(try_body);
                 simplify_conditions_recursive(catch_body);
             }
@@ -3242,7 +3413,11 @@ fn apply_inferred_types(
 fn collect_bare_condition_names(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
     for stmt in stmts {
         match stmt {
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 collect_bare_names_in_expr(condition, out);
                 collect_bare_condition_names(then_body, out);
                 if let Some(eb) = else_body {
@@ -3259,7 +3434,11 @@ fn collect_bare_condition_names(stmts: &[Statement], out: &mut std::collections:
                 }
             }
             Statement::ForEach { body, .. } => collect_bare_condition_names(body, out),
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 collect_bare_condition_names(try_body, out);
                 collect_bare_condition_names(catch_body, out);
             }
@@ -3294,7 +3473,9 @@ fn apply_types_recursive(
 ) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Statement::VarDecl { target, var_type, .. } => {
+            Statement::VarDecl {
+                target, var_type, ..
+            } => {
                 if bare_conditions.contains(target)
                     && matches!(var_type.as_deref(), None | Some("int"))
                 {
@@ -3305,7 +3486,11 @@ fn apply_types_recursive(
                     *var_type = Some(inferred.clone());
                 }
             }
-            Statement::If { then_body, else_body, .. } => {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 apply_types_recursive(then_body, name_types, bare_conditions);
                 if let Some(eb) = else_body {
                     apply_types_recursive(eb, name_types, bare_conditions);
@@ -3322,7 +3507,11 @@ fn apply_types_recursive(
             Statement::ForEach { body, .. } => {
                 apply_types_recursive(body, name_types, bare_conditions);
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 apply_types_recursive(try_body, name_types, bare_conditions);
                 apply_types_recursive(catch_body, name_types, bare_conditions);
             }
@@ -3341,7 +3530,11 @@ fn infer_expr_type(expr: &Expression) -> Option<String> {
         Expression::ConstFloat(_) => Some("float".to_string()),
         Expression::ConstDouble(_) => Some("double".to_string()),
         Expression::Concat { builder, .. } => Some(builder.clone()),
-        Expression::Binary { op: BinaryOp::Add, left, .. } => {
+        Expression::Binary {
+            op: BinaryOp::Add,
+            left,
+            ..
+        } => {
             // String concatenation infers String when either side is a string.
             if matches!(left.as_ref(), Expression::ConstString(_)) {
                 Some("String".to_string())
@@ -3358,7 +3551,9 @@ fn infer_name_for_var(target: &str, value: &Expression) -> Option<String> {
         return None;
     }
     match value {
-        Expression::Invoke { target: inv_target, .. } => {
+        Expression::Invoke {
+            target: inv_target, ..
+        } => {
             if inv_target.ends_with("ImageIO.read") || inv_target.ends_with(".read") {
                 Some("bufferedImage".to_string())
             } else if inv_target.ends_with(".id") || inv_target == "id" {
@@ -3398,7 +3593,11 @@ fn rename_var_in_stmts(stmts: &mut [Statement], old_name: &str, new_name: &str) 
                 }
             }
             Statement::Expression(expr) => rename_var_in_expr(expr, old_name, new_name),
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 rename_var_in_expr(condition, old_name, new_name);
                 rename_var_in_stmts(then_body, old_name, new_name);
                 if let Some(eb) = else_body {
@@ -3415,11 +3614,17 @@ fn rename_var_in_stmts(stmts: &mut [Statement], old_name: &str, new_name: &str) 
                     rename_var_in_stmts(&mut arm.body, old_name, new_name);
                 }
             }
-            Statement::ForEach { collection, body, .. } => {
+            Statement::ForEach {
+                collection, body, ..
+            } => {
                 rename_var_in_expr(collection, old_name, new_name);
                 rename_var_in_stmts(body, old_name, new_name);
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 rename_var_in_stmts(try_body, old_name, new_name);
                 rename_var_in_stmts(catch_body, old_name, new_name);
             }
@@ -3431,10 +3636,8 @@ fn rename_var_in_stmts(stmts: &mut [Statement], old_name: &str, new_name: &str) 
 
 fn rename_var_in_expr(expr: &mut Expression, old_name: &str, new_name: &str) {
     match expr {
-        Expression::Local(name) => {
-            if name == old_name {
-                *name = new_name.to_string();
-            }
+        Expression::Local(name) if name == old_name => {
+            *name = new_name.to_string();
         }
         Expression::FieldAccess { object, .. } => rename_var_in_expr(object, old_name, new_name),
         Expression::Binary { left, right, .. } => {
@@ -3475,7 +3678,11 @@ fn convert_assigns_to_var_decls_recursive(
 ) {
     let mut i = 0;
     while i < stmts.len() {
-        if let Statement::Assign { ref target, ref value } = stmts[i] {
+        if let Statement::Assign {
+            ref target,
+            ref value,
+        } = stmts[i]
+        {
             if !target.contains('.')
                 && !target.contains('[')
                 && !target.starts_with('$')
@@ -3617,7 +3824,11 @@ fn collect_locals_in_stmts(stmts: &[Statement], locals: &mut Vec<String>) {
                 }
             }
             Statement::Expression(expr) => collect_locals_in_expr(expr, locals),
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 collect_locals_in_expr(condition, locals);
                 collect_locals_in_stmts(then_body, locals);
                 if let Some(eb) = else_body {
@@ -3634,11 +3845,17 @@ fn collect_locals_in_stmts(stmts: &[Statement], locals: &mut Vec<String>) {
                     collect_locals_in_stmts(&arm.body, locals);
                 }
             }
-            Statement::ForEach { collection, body, .. } => {
+            Statement::ForEach {
+                collection, body, ..
+            } => {
                 collect_locals_in_expr(collection, locals);
                 collect_locals_in_stmts(body, locals);
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 collect_locals_in_stmts(try_body, locals);
                 collect_locals_in_stmts(catch_body, locals);
             }
@@ -3650,10 +3867,8 @@ fn collect_locals_in_stmts(stmts: &[Statement], locals: &mut Vec<String>) {
 
 fn collect_locals_in_expr(expr: &Expression, locals: &mut Vec<String>) {
     match expr {
-        Expression::Local(name) => {
-            if !locals.contains(name) && name != "this" {
-                locals.push(name.clone());
-            }
+        Expression::Local(name) if !locals.contains(name) && name != "this" => {
+            locals.push(name.clone());
         }
         Expression::FieldAccess { object, .. } => collect_locals_in_expr(object, locals),
         Expression::Binary { left, right, .. } => {
@@ -3686,7 +3901,11 @@ fn collect_locals_in_expr(expr: &Expression, locals: &mut Vec<String>) {
 fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
     for stmt in stmts.iter_mut() {
         match stmt {
-            Statement::If { then_body, else_body, .. } => {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
                 restructure_for_each_loops_recursive(then_body);
                 if let Some(eb) = else_body {
                     restructure_for_each_loops_recursive(eb);
@@ -3700,7 +3919,11 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
                     restructure_for_each_loops_recursive(&mut arm.body);
                 }
             }
-            Statement::TryCatch { try_body, catch_body, .. } => {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                ..
+            } => {
                 restructure_for_each_loops_recursive(try_body);
                 restructure_for_each_loops_recursive(catch_body);
             }
@@ -3714,10 +3937,20 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
     let mut i = 0;
     while i + 1 < stmts.len() {
         let (it_var, coll_expr) = match &stmts[i] {
-            Statement::VarDecl { target, value: Some(val), .. }
+            Statement::VarDecl {
+                target,
+                value: Some(val),
+                ..
+            }
             | Statement::Assign { target, value: val } => {
-                if let Expression::Invoke { target: inv_target, args } = val {
-                    if (inv_target.ends_with(".iterator") || inv_target.ends_with(".iterator()")) && args.is_empty() {
+                if let Expression::Invoke {
+                    target: inv_target,
+                    args,
+                } = val
+                {
+                    if (inv_target.ends_with(".iterator") || inv_target.ends_with(".iterator()"))
+                        && args.is_empty()
+                    {
                         let coll_str = if let Some(dot_idx) = inv_target.rfind(".iterator") {
                             &inv_target[..dot_idx]
                         } else {
@@ -3741,7 +3974,11 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
 
         let is_has_next = match &stmts[i + 1] {
             Statement::While { condition, .. } => {
-                if let Expression::Invoke { target: cond_target, .. } = condition {
+                if let Expression::Invoke {
+                    target: cond_target,
+                    ..
+                } = condition
+                {
                     cond_target == &format!("{it_var}.hasNext")
                         || cond_target == &format!("{it_var}.hasNext()")
                 } else {
@@ -3760,7 +3997,11 @@ fn restructure_for_each_loops_recursive(stmts: &mut Vec<Statement>) {
             Statement::While { body, .. } if !body.is_empty() => {
                 let first = &body[0];
                 let (e_var, e_type) = match first {
-                    Statement::VarDecl { target, var_type, value } => {
+                    Statement::VarDecl {
+                        target,
+                        var_type,
+                        value,
+                    } => {
                         let inferred = var_type.clone().or_else(|| match value {
                             Some(Expression::Cast { target_type, .. }) => Some(target_type.clone()),
                             _ => None,
@@ -3901,10 +4142,8 @@ pub fn lower_method_to_ast(
     if let (Some(start), Some(prev)) = (run_start, prev_off) {
         dead_runs.push((start, prev));
     }
-    let dead_start: std::collections::HashSet<usize> =
-        dead_runs.iter().map(|(s, _)| *s).collect();
-    let dead_end: std::collections::HashSet<usize> =
-        dead_runs.iter().map(|(_, e)| *e).collect();
+    let dead_start: std::collections::HashSet<usize> = dead_runs.iter().map(|(s, _)| *s).collect();
+    let dead_end: std::collections::HashSet<usize> = dead_runs.iter().map(|(_, e)| *e).collect();
     let all_instructions: Vec<Instruction> = cfg
         .blocks
         .iter()
@@ -3967,9 +4206,9 @@ pub fn lower_method_to_ast(
     // (returns/throws/gotos after a divergent statement, empty-stack
     // residue) are dropped. Informative dead code (dead switches, stores,
     // real throws) stays visible for analysts.
-    machine
-        .statements
-        .retain(|(off, stmt)| live.get(off).copied().unwrap_or(true) || !dead_stmt_is_droppable(stmt));
+    machine.statements.retain(|(off, stmt)| {
+        live.get(off).copied().unwrap_or(true) || !dead_stmt_is_droppable(stmt)
+    });
 
     // Snapshot slot names for type attribution (slot -> source name).
     let slot_names: Vec<String> = machine.locals.iter().map(local_display_name).collect();
@@ -4066,7 +4305,9 @@ fn dead_stmt_is_droppable(stmt: &Statement) -> bool {
         Statement::Expression(expr) | Statement::Assign { value: expr, .. } => {
             dead_expr_is_noise(expr)
         }
-        Statement::VarDecl { value: Some(value), .. } => dead_expr_is_noise(value),
+        Statement::VarDecl {
+            value: Some(value), ..
+        } => dead_expr_is_noise(value),
         _ => false,
     }
 }
@@ -4115,23 +4356,53 @@ mod tests {
         // }
         let pool = vec![
             Recoverable::Missing, // 0
-            Recoverable::Present(ConstantPoolEntry::Utf8("java/lang/StringBuilder".to_string())), // 1
+            Recoverable::Present(ConstantPoolEntry::Utf8(
+                "java/lang/StringBuilder".to_string(),
+            )), // 1
             Recoverable::Present(ConstantPoolEntry::Class { name_index: 1 }), // 2
             Recoverable::Present(ConstantPoolEntry::Utf8("<init>".to_string())), // 3
             Recoverable::Present(ConstantPoolEntry::Utf8("()V".to_string())), // 4
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 3, descriptor_index: 4 }), // 5
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 5 }), // 6
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 3,
+                descriptor_index: 4,
+            }), // 5
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 2,
+                name_and_type_index: 5,
+            }), // 6
             Recoverable::Present(ConstantPoolEntry::Utf8("append".to_string())), // 7
-            Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)Ljava/lang/StringBuilder;".to_string())), // 8
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 8 }), // 9
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 9 }), // 10
-            Recoverable::Present(ConstantPoolEntry::Utf8("(I)Ljava/lang/StringBuilder;".to_string())), // 11
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 7, descriptor_index: 11 }), // 12
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 12 }), // 13
+            Recoverable::Present(ConstantPoolEntry::Utf8(
+                "(Ljava/lang/String;)Ljava/lang/StringBuilder;".to_string(),
+            )), // 8
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 7,
+                descriptor_index: 8,
+            }), // 9
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 2,
+                name_and_type_index: 9,
+            }), // 10
+            Recoverable::Present(ConstantPoolEntry::Utf8(
+                "(I)Ljava/lang/StringBuilder;".to_string(),
+            )), // 11
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 7,
+                descriptor_index: 11,
+            }), // 12
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 2,
+                name_and_type_index: 12,
+            }), // 13
             Recoverable::Present(ConstantPoolEntry::Utf8("toString".to_string())), // 14
             Recoverable::Present(ConstantPoolEntry::Utf8("()Ljava/lang/String;".to_string())), // 15
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 14, descriptor_index: 15 }), // 16
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 2, name_and_type_index: 16 }), // 17
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 14,
+                descriptor_index: 15,
+            }), // 16
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 2,
+                name_and_type_index: 16,
+            }), // 17
             Recoverable::Present(ConstantPoolEntry::Utf8("even".to_string())), // 18
             Recoverable::Present(ConstantPoolEntry::Utf8("odd".to_string())), // 19
             Recoverable::Present(ConstantPoolEntry::Utf8("test:".to_string())), // 20
@@ -4139,14 +4410,26 @@ mod tests {
             Recoverable::Present(ConstantPoolEntry::Class { name_index: 21 }), // 22
             Recoverable::Present(ConstantPoolEntry::Utf8("out".to_string())), // 23
             Recoverable::Present(ConstantPoolEntry::Utf8("Ljava/io/PrintStream;".to_string())), // 24
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 23, descriptor_index: 24 }), // 25
-            Recoverable::Present(ConstantPoolEntry::FieldRef { class_index: 22, name_and_type_index: 25 }), // 26
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 23,
+                descriptor_index: 24,
+            }), // 25
+            Recoverable::Present(ConstantPoolEntry::FieldRef {
+                class_index: 22,
+                name_and_type_index: 25,
+            }), // 26
             Recoverable::Present(ConstantPoolEntry::Utf8("java/io/PrintStream".to_string())), // 27
-            Recoverable::Present(ConstantPoolEntry::Class { name_index: 27 }), // 28
-            Recoverable::Present(ConstantPoolEntry::Utf8("println".to_string())), // 29
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 27 }),                // 28
+            Recoverable::Present(ConstantPoolEntry::Utf8("println".to_string())),             // 29
             Recoverable::Present(ConstantPoolEntry::Utf8("(Ljava/lang/String;)V".to_string())), // 30
-            Recoverable::Present(ConstantPoolEntry::NameAndType { name_index: 29, descriptor_index: 30 }), // 31
-            Recoverable::Present(ConstantPoolEntry::MethodRef { class_index: 28, name_and_type_index: 31 }), // 32
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 29,
+                descriptor_index: 30,
+            }), // 31
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 28,
+                name_and_type_index: 31,
+            }), // 32
             Recoverable::Present(ConstantPoolEntry::String { string_index: 20 }), // 33 -> "test:"
             Recoverable::Present(ConstantPoolEntry::String { string_index: 18 }), // 34 -> "even"
             Recoverable::Present(ConstantPoolEntry::String { string_index: 19 }), // 35 -> "odd"
@@ -4154,43 +4437,230 @@ mod tests {
         let int = crate::bytecode::LoadStoreType::Int;
         let ref_ = crate::bytecode::LoadStoreType::Reference;
         let instructions = vec![
-            Instruction { offset: 0, length: 3, kind: InstructionKind::Type { opcode: 0xbb, cp_index: 2 } },
-            Instruction { offset: 3, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Dup) },
-            Instruction { offset: 4, length: 3, kind: InstructionKind::Invoke { opcode: 0xb7, cp_index: 6 } },
-            Instruction { offset: 7, length: 1, kind: InstructionKind::Store { ty: ref_, index: 1 } },
-            Instruction { offset: 8, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 9, length: 2, kind: InstructionKind::Ldc(33) },
-            Instruction { offset: 11, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 14, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            Instruction { offset: 15, length: 1, kind: InstructionKind::Iconst(0) },
-            Instruction { offset: 16, length: 1, kind: InstructionKind::Store { ty: int, index: 2 } },
-            Instruction { offset: 17, length: 3, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 18, length: 1, kind: InstructionKind::Iconst(5) },
-            Instruction { offset: 19, length: 3, kind: InstructionKind::If { opcode: 0xa2, target: 59 } },
-            Instruction { offset: 22, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 23, length: 1, kind: InstructionKind::Iconst(2) },
-            Instruction { offset: 24, length: 1, kind: InstructionKind::Arithmetic { opcode: 0x70 } },
-            Instruction { offset: 25, length: 3, kind: InstructionKind::If { opcode: 0x9a, target: 42 } },
-            Instruction { offset: 28, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 29, length: 2, kind: InstructionKind::Ldc(34) },
-            Instruction { offset: 31, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 34, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 35, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
-            Instruction { offset: 38, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            Instruction { offset: 39, length: 3, kind: InstructionKind::Goto(53) },
-            Instruction { offset: 42, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 43, length: 2, kind: InstructionKind::Ldc(35) },
-            Instruction { offset: 45, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 10 } },
-            Instruction { offset: 48, length: 1, kind: InstructionKind::Load { ty: int, index: 2 } },
-            Instruction { offset: 49, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 13 } },
-            Instruction { offset: 52, length: 1, kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop) },
-            Instruction { offset: 53, length: 3, kind: InstructionKind::Iinc { index: 2, amount: 1 } },
-            Instruction { offset: 56, length: 3, kind: InstructionKind::Goto(17) },
-            Instruction { offset: 59, length: 3, kind: InstructionKind::Field { opcode: 0xb2, cp_index: 26 } },
-            Instruction { offset: 62, length: 1, kind: InstructionKind::Load { ty: ref_, index: 1 } },
-            Instruction { offset: 63, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 17 } },
-            Instruction { offset: 66, length: 3, kind: InstructionKind::Invoke { opcode: 0xb6, cp_index: 32 } },
-            Instruction { offset: 69, length: 1, kind: InstructionKind::Return(crate::bytecode::ReturnType::Void) },
+            Instruction {
+                offset: 0,
+                length: 3,
+                kind: InstructionKind::Type {
+                    opcode: 0xbb,
+                    cp_index: 2,
+                },
+            },
+            Instruction {
+                offset: 3,
+                length: 1,
+                kind: InstructionKind::Stack(crate::bytecode::StackOp::Dup),
+            },
+            Instruction {
+                offset: 4,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb7,
+                    cp_index: 6,
+                },
+            },
+            Instruction {
+                offset: 7,
+                length: 1,
+                kind: InstructionKind::Store { ty: ref_, index: 1 },
+            },
+            Instruction {
+                offset: 8,
+                length: 1,
+                kind: InstructionKind::Load { ty: ref_, index: 1 },
+            },
+            Instruction {
+                offset: 9,
+                length: 2,
+                kind: InstructionKind::Ldc(33),
+            },
+            Instruction {
+                offset: 11,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 10,
+                },
+            },
+            Instruction {
+                offset: 14,
+                length: 1,
+                kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop),
+            },
+            Instruction {
+                offset: 15,
+                length: 1,
+                kind: InstructionKind::Iconst(0),
+            },
+            Instruction {
+                offset: 16,
+                length: 1,
+                kind: InstructionKind::Store { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 17,
+                length: 3,
+                kind: InstructionKind::Load { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 18,
+                length: 1,
+                kind: InstructionKind::Iconst(5),
+            },
+            Instruction {
+                offset: 19,
+                length: 3,
+                kind: InstructionKind::If {
+                    opcode: 0xa2,
+                    target: 59,
+                },
+            },
+            Instruction {
+                offset: 22,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 23,
+                length: 1,
+                kind: InstructionKind::Iconst(2),
+            },
+            Instruction {
+                offset: 24,
+                length: 1,
+                kind: InstructionKind::Arithmetic { opcode: 0x70 },
+            },
+            Instruction {
+                offset: 25,
+                length: 3,
+                kind: InstructionKind::If {
+                    opcode: 0x9a,
+                    target: 42,
+                },
+            },
+            Instruction {
+                offset: 28,
+                length: 1,
+                kind: InstructionKind::Load { ty: ref_, index: 1 },
+            },
+            Instruction {
+                offset: 29,
+                length: 2,
+                kind: InstructionKind::Ldc(34),
+            },
+            Instruction {
+                offset: 31,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 10,
+                },
+            },
+            Instruction {
+                offset: 34,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 35,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 13,
+                },
+            },
+            Instruction {
+                offset: 38,
+                length: 1,
+                kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop),
+            },
+            Instruction {
+                offset: 39,
+                length: 3,
+                kind: InstructionKind::Goto(53),
+            },
+            Instruction {
+                offset: 42,
+                length: 1,
+                kind: InstructionKind::Load { ty: ref_, index: 1 },
+            },
+            Instruction {
+                offset: 43,
+                length: 2,
+                kind: InstructionKind::Ldc(35),
+            },
+            Instruction {
+                offset: 45,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 10,
+                },
+            },
+            Instruction {
+                offset: 48,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 2 },
+            },
+            Instruction {
+                offset: 49,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 13,
+                },
+            },
+            Instruction {
+                offset: 52,
+                length: 1,
+                kind: InstructionKind::Stack(crate::bytecode::StackOp::Pop),
+            },
+            Instruction {
+                offset: 53,
+                length: 3,
+                kind: InstructionKind::Iinc {
+                    index: 2,
+                    amount: 1,
+                },
+            },
+            Instruction {
+                offset: 56,
+                length: 3,
+                kind: InstructionKind::Goto(17),
+            },
+            Instruction {
+                offset: 59,
+                length: 3,
+                kind: InstructionKind::Field {
+                    opcode: 0xb2,
+                    cp_index: 26,
+                },
+            },
+            Instruction {
+                offset: 62,
+                length: 1,
+                kind: InstructionKind::Load { ty: ref_, index: 1 },
+            },
+            Instruction {
+                offset: 63,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 17,
+                },
+            },
+            Instruction {
+                offset: 66,
+                length: 3,
+                kind: InstructionKind::Invoke {
+                    opcode: 0xb6,
+                    cp_index: 32,
+                },
+            },
+            Instruction {
+                offset: 69,
+                length: 1,
+                kind: InstructionKind::Return(crate::bytecode::ReturnType::Void),
+            },
         ];
         let code = test_code(instructions);
         let method = lower_method_to_ast(
@@ -4271,7 +4741,18 @@ mod tests {
         ];
 
         let code = test_code(instructions);
-        let method = lower_method_to_ast(&pool, "test", "$2", None, &code, "$4", 0, &[], &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        let method = lower_method_to_ast(
+            &pool,
+            "test",
+            "$2",
+            None,
+            &code,
+            "$4",
+            0,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(method.statements.len(), 1);
         match &method.statements[0] {
             Statement::Expression(Expression::FieldAccess { field, .. }) => {
@@ -4338,7 +4819,18 @@ mod tests {
         ];
 
         let code = test_code(instructions);
-        let method = lower_method_to_ast(&pool, "test", "$2", None, &code, "$4", 0, &[], &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        let method = lower_method_to_ast(
+            &pool,
+            "test",
+            "$2",
+            None,
+            &code,
+            "$4",
+            0,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(method.statements.len(), 1);
         match &method.statements[0] {
             Statement::Expression(Expression::Invoke { target, args }) => {
@@ -4406,7 +4898,18 @@ mod tests {
         ];
 
         let code = test_code(instructions);
-        let method = lower_method_to_ast(&pool, "test", "$2", None, &code, "$4", 0, &[], &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        let method = lower_method_to_ast(
+            &pool,
+            "test",
+            "$2",
+            None,
+            &code,
+            "$4",
+            0,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
         // var_1 = new Foo(); (trailing void return removed)
         assert_eq!(method.statements.len(), 1);
         match &method.statements[0] {
@@ -4439,7 +4942,18 @@ mod tests {
 
         let pool: Vec<Recoverable<ConstantPoolEntry>> = vec![];
         let code = test_code(instructions);
-        let method = lower_method_to_ast(&pool, "test", "$2", None, &code, "$4", 0, &[], &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        let method = lower_method_to_ast(
+            &pool,
+            "test",
+            "$2",
+            None,
+            &code,
+            "$4",
+            0,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(method.statements.len(), 1);
         match &method.statements[0] {
             Statement::Return(Some(Expression::ConstInt(42))) => {}
@@ -4519,7 +5033,18 @@ mod tests {
         ];
 
         let code = test_code(instructions);
-        let method = lower_method_to_ast(&pool, "test", "$2", None, &code, "$4", 0, &[], &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        let method = lower_method_to_ast(
+            &pool,
+            "test",
+            "$2",
+            None,
+            &code,
+            "$4",
+            0,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(method.statements.len(), 1);
         match &method.statements[0] {
             Statement::Assign { target, value } => {
@@ -4651,7 +5176,8 @@ mod tests {
     }
 
     #[test]
-    fn folds_constant_comparison_in_condition() {        // `if (!(1 != 0))` (obfuscator opaque predicate) folds bottom-up.
+    fn folds_constant_comparison_in_condition() {
+        // `if (!(1 != 0))` (obfuscator opaque predicate) folds bottom-up.
         let mut cond = Expression::Unary {
             op: UnaryOp::Not,
             operand: Box::new(Expression::Binary {
@@ -4665,7 +5191,8 @@ mod tests {
     }
 
     #[test]
-    fn simplifies_double_negation_and_null() {        let mut not_not = Expression::Unary {
+    fn simplifies_double_negation_and_null() {
+        let mut not_not = Expression::Unary {
             op: UnaryOp::Not,
             operand: Box::new(Expression::Unary {
                 op: UnaryOp::Not,
@@ -4699,7 +5226,11 @@ mod tests {
         let pool = vec![Recoverable::Missing];
         let int = crate::bytecode::LoadStoreType::Int;
         let instructions = vec![
-            Instruction { offset: 0, length: 1, kind: InstructionKind::Load { ty: int, index: 0 } },
+            Instruction {
+                offset: 0,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 0 },
+            },
             Instruction {
                 offset: 1,
                 length: 1,
@@ -4710,19 +5241,31 @@ mod tests {
                     targets: vec![4, 7],
                 },
             },
-            Instruction { offset: 4, length: 1, kind: InstructionKind::Iconst(10) },
+            Instruction {
+                offset: 4,
+                length: 1,
+                kind: InstructionKind::Iconst(10),
+            },
             Instruction {
                 offset: 5,
                 length: 1,
                 kind: InstructionKind::Return(crate::bytecode::ReturnType::Int),
             },
-            Instruction { offset: 7, length: 1, kind: InstructionKind::Iconst(20) },
+            Instruction {
+                offset: 7,
+                length: 1,
+                kind: InstructionKind::Iconst(20),
+            },
             Instruction {
                 offset: 8,
                 length: 1,
                 kind: InstructionKind::Return(crate::bytecode::ReturnType::Int),
             },
-            Instruction { offset: 10, length: 1, kind: InstructionKind::Iconst(30) },
+            Instruction {
+                offset: 10,
+                length: 1,
+                kind: InstructionKind::Iconst(30),
+            },
             Instruction {
                 offset: 11,
                 length: 1,
@@ -4765,7 +5308,11 @@ mod tests {
         let pool = vec![Recoverable::Missing];
         let int = crate::bytecode::LoadStoreType::Int;
         let instructions = vec![
-            Instruction { offset: 0, length: 1, kind: InstructionKind::Load { ty: int, index: 0 } },
+            Instruction {
+                offset: 0,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 0 },
+            },
             Instruction {
                 offset: 1,
                 length: 1,
@@ -4776,12 +5323,36 @@ mod tests {
                     targets: vec![4, 8],
                 },
             },
-            Instruction { offset: 4, length: 1, kind: InstructionKind::Iconst(10) },
-            Instruction { offset: 6, length: 1, kind: InstructionKind::Goto(14) },
-            Instruction { offset: 8, length: 1, kind: InstructionKind::Iconst(20) },
-            Instruction { offset: 10, length: 1, kind: InstructionKind::Goto(14) },
-            Instruction { offset: 12, length: 1, kind: InstructionKind::Iconst(30) },
-            Instruction { offset: 14, length: 1, kind: InstructionKind::Store { ty: int, index: 1 } },
+            Instruction {
+                offset: 4,
+                length: 1,
+                kind: InstructionKind::Iconst(10),
+            },
+            Instruction {
+                offset: 6,
+                length: 1,
+                kind: InstructionKind::Goto(14),
+            },
+            Instruction {
+                offset: 8,
+                length: 1,
+                kind: InstructionKind::Iconst(20),
+            },
+            Instruction {
+                offset: 10,
+                length: 1,
+                kind: InstructionKind::Goto(14),
+            },
+            Instruction {
+                offset: 12,
+                length: 1,
+                kind: InstructionKind::Iconst(30),
+            },
+            Instruction {
+                offset: 14,
+                length: 1,
+                kind: InstructionKind::Store { ty: int, index: 1 },
+            },
             Instruction {
                 offset: 15,
                 length: 1,
@@ -4826,7 +5397,11 @@ mod tests {
         let pool = vec![Recoverable::Missing];
         let int = crate::bytecode::LoadStoreType::Int;
         let instructions = vec![
-            Instruction { offset: 0, length: 1, kind: InstructionKind::Load { ty: int, index: 0 } },
+            Instruction {
+                offset: 0,
+                length: 1,
+                kind: InstructionKind::Load { ty: int, index: 0 },
+            },
             Instruction {
                 offset: 1,
                 length: 1,
@@ -4837,12 +5412,32 @@ mod tests {
                     targets: vec![4],
                 },
             },
-            Instruction { offset: 4, length: 1, kind: InstructionKind::Iconst(10) },
-            Instruction { offset: 6, length: 1, kind: InstructionKind::Goto(14) },
+            Instruction {
+                offset: 4,
+                length: 1,
+                kind: InstructionKind::Iconst(10),
+            },
+            Instruction {
+                offset: 6,
+                length: 1,
+                kind: InstructionKind::Goto(14),
+            },
             // Unreachable trap: no predecessor jumps here.
-            Instruction { offset: 8, length: 1, kind: InstructionKind::Throw },
-            Instruction { offset: 12, length: 1, kind: InstructionKind::Iconst(30) },
-            Instruction { offset: 14, length: 1, kind: InstructionKind::Store { ty: int, index: 1 } },
+            Instruction {
+                offset: 8,
+                length: 1,
+                kind: InstructionKind::Throw,
+            },
+            Instruction {
+                offset: 12,
+                length: 1,
+                kind: InstructionKind::Iconst(30),
+            },
+            Instruction {
+                offset: 14,
+                length: 1,
+                kind: InstructionKind::Store { ty: int, index: 1 },
+            },
             Instruction {
                 offset: 15,
                 length: 1,
@@ -4930,11 +5525,18 @@ mod tests {
             Recoverable::Present(ConstantPoolEntry::String { string_index: 15 }), // 16
         ];
         let instructions = vec![
-            Instruction { offset: 0, length: 2, kind: InstructionKind::Ldc(16) },
+            Instruction {
+                offset: 0,
+                length: 2,
+                kind: InstructionKind::Ldc(16),
+            },
             Instruction {
                 offset: 3,
                 length: 5,
-                kind: InstructionKind::Invoke { opcode: 0xba, cp_index: 14 },
+                kind: InstructionKind::Invoke {
+                    opcode: 0xba,
+                    cp_index: 14,
+                },
             },
             Instruction {
                 offset: 8,
@@ -4972,12 +5574,29 @@ mod tests {
     }
 
     #[test]
-    fn spills_fresh_array_store_into_temp() {        let pool = vec![Recoverable::Missing];
+    fn spills_fresh_array_store_into_temp() {
+        let pool = vec![Recoverable::Missing];
         let instructions = vec![
-            Instruction { offset: 0, length: 1, kind: InstructionKind::Iconst(1) },
-            Instruction { offset: 1, length: 1, kind: InstructionKind::NewArray(10) },
-            Instruction { offset: 2, length: 1, kind: InstructionKind::Iconst(0) },
-            Instruction { offset: 3, length: 1, kind: InstructionKind::Iconst(5) },
+            Instruction {
+                offset: 0,
+                length: 1,
+                kind: InstructionKind::Iconst(1),
+            },
+            Instruction {
+                offset: 1,
+                length: 1,
+                kind: InstructionKind::NewArray(10),
+            },
+            Instruction {
+                offset: 2,
+                length: 1,
+                kind: InstructionKind::Iconst(0),
+            },
+            Instruction {
+                offset: 3,
+                length: 1,
+                kind: InstructionKind::Iconst(5),
+            },
             Instruction {
                 offset: 4,
                 length: 1,
@@ -5004,7 +5623,11 @@ mod tests {
         );
         assert!(method.statements.len() >= 2);
         match &method.statements[0] {
-            Statement::VarDecl { target, value: Some(Expression::NewArray { .. }), .. } => {
+            Statement::VarDecl {
+                target,
+                value: Some(Expression::NewArray { .. }),
+                ..
+            } => {
                 assert_eq!(target, "arr_tmp0");
             }
             other => panic!("expected fresh array temp, got {other:?}"),
@@ -5032,10 +5655,6 @@ mod tests {
         ];
         remove_dead_branches(&mut stmts);
         assert_eq!(stmts.len(), 1);
-        assert_eq!(
-            stmts[0],
-            Statement::Return(Some(Expression::ConstInt(2)))
-        );
+        assert_eq!(stmts[0], Statement::Return(Some(Expression::ConstInt(2))));
     }
 }
-

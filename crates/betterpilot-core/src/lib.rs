@@ -108,10 +108,8 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                     &known_fields,
                 )
             } else {
-                let (params, return_type) = generics::generic_method_types(
-                    &descriptor,
-                    method.signature.as_deref(),
-                );
+                let (params, return_type) =
+                    generics::generic_method_types(&descriptor, method.signature.as_deref());
                 let param_names: Vec<String> = params
                     .iter()
                     .enumerate()
@@ -215,8 +213,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                 .unwrap_or_else(|| format!("field#{}", f.name_index));
             let descriptor = get_utf8_from_pool(&class.constant_pool, f.descriptor_index)
                 .unwrap_or_else(|| "Ljava/lang/Object;".to_string());
-            let field_type =
-                generics::generic_field_type(&descriptor, f.signature.as_deref());
+            let field_type = generics::generic_field_type(&descriptor, f.signature.as_deref());
             ast::FieldDecl {
                 name,
                 field_type,
@@ -261,42 +258,28 @@ fn collect_enum_constants(class: &ClassFile) -> Vec<String> {
                     opcode: 0xb3,
                     cp_index,
                 } = instrs[i].kind
-                {
-                    if let Some(Recoverable::Present(ConstantPoolEntry::FieldRef {
+                    && let Some(Recoverable::Present(ConstantPoolEntry::FieldRef {
                         class_index,
                         name_and_type_index,
                     })) = class.constant_pool.get(cp_index as usize)
+                    && let Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) =
+                        class.constant_pool.get(*class_index as usize)
+                    && let Some(field_class) = get_utf8_from_pool(&class.constant_pool, *name_index)
+                    && field_class == class_name
+                    && let Some(Recoverable::Present(ConstantPoolEntry::NameAndType {
+                        name_index: field_name_idx,
+                        descriptor_index: field_desc_idx,
+                    })) = class.constant_pool.get(*name_and_type_index as usize)
+                {
+                    let field_desc = get_utf8_from_pool(&class.constant_pool, *field_desc_idx);
+                    let expected_desc = format!("L{class_name};");
+                    if field_desc.as_deref() == Some(&expected_desc)
+                        && let Some(field_name) =
+                            get_utf8_from_pool(&class.constant_pool, *field_name_idx)
+                        && !field_name.starts_with('$')
+                        && field_name != "<clinit>"
                     {
-                        if let Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) =
-                            class.constant_pool.get(*class_index as usize)
-                        {
-                            if let Some(field_class) =
-                                get_utf8_from_pool(&class.constant_pool, *name_index)
-                            {
-                                if field_class == class_name {
-                                    if let Some(Recoverable::Present(
-                                        ConstantPoolEntry::NameAndType {
-                                            name_index: field_name_idx,
-                                            descriptor_index: field_desc_idx,
-                                        },
-                                    )) = class.constant_pool.get(*name_and_type_index as usize)
-                                    {
-                                        let field_desc = get_utf8_from_pool(&class.constant_pool, *field_desc_idx);
-                                        let expected_desc = format!("L{class_name};");
-                                        if field_desc.as_deref() == Some(&expected_desc) {
-                                            if let Some(field_name) = get_utf8_from_pool(
-                                                &class.constant_pool,
-                                                *field_name_idx,
-                                            ) {
-                                                if !field_name.starts_with('$') && field_name != "<clinit>" {
-                                                    constants.push(field_name);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        constants.push(field_name);
                     }
                 }
                 i += 1;
