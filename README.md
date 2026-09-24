@@ -29,7 +29,14 @@ obfuscated, and partially corrupted classfiles instead of giving up on them.
   `for (int i = 0; i < n; i++)` with compound assignments (`i++`, `x += n`);
 - CFR-style else rendering: `} else {` on one line, `else if` chains;
 - discarded method calls kept as expression statements (`sb.append("x");`);
-- non-boolean conditions restored to valid Java (`if (i % 2 != 0)`);
+- non-boolean conditions restored to valid Java (`if (i % 2 != 0)`),
+  incl. reference comparisons (`in.peek() == JsonToken.NULL`);
+- `synchronized` blocks reconstructed from monitorenter/monitorexit
+  pairing, with correct `final`/`synchronized`/`native`/`abstract`
+  modifiers; bridge/synthetic methods hidden like CFR/Vineflower do;
+- annotations: `RuntimeVisible/InvisibleAnnotations` rendered
+  (`@Deprecated`, `@FunctionalInterface`, `@SerializedName`-style custom
+  ones with imports), `@Override` on `java.lang.Object` methods;
 - dead-code tolerance: unreachable traps are stack-sandboxed (never
   corrupt live values), dead noise pruned, informative dead code kept;
 - `LineNumberTable` parsing (statement ordering / diagnostics groundwork);
@@ -117,7 +124,9 @@ better in CFR. Speed and robustness (zero panics across
 the corpora, per-class panic isolation) are Vinylite's current strengths.
 Try/catch coverage on commons-lang3: 77 try + 7 try-with-resources
 blocks vs CFR's 89 + 10; multi-catch, finally and single-resource TWR
-shapes are reconstructed canonically.
+shapes are reconstructed canonically. `@Override` beyond
+`java.lang.Object` methods needs hierarchy resolution and is not emitted;
+boolean-as-int returns (`? 1 : 0`) are only partially re-typed.
 
 ## Development
 
