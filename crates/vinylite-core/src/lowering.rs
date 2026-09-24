@@ -1437,6 +1437,26 @@ fn make_if_cond(opcode: u8, stack: &mut Vec<StackValue>) -> Expression {
                 right: Box::new(Expression::ConstNull),
             }
         }
+        0xa5 => {
+            // if_acmpeq: reference equality (enums, `==` on objects)
+            let r = pop(stack);
+            let l = pop(stack);
+            Expression::Binary {
+                left: Box::new(l),
+                op: BinaryOp::Eq,
+                right: Box::new(r),
+            }
+        }
+        0xa6 => {
+            // if_acmpne: reference inequality
+            let r = pop(stack);
+            let l = pop(stack);
+            Expression::Binary {
+                left: Box::new(l),
+                op: BinaryOp::Ne,
+                right: Box::new(r),
+            }
+        }
         _ => Expression::Unknown("/* cond */".to_string()),
     }
 }
@@ -7222,6 +7242,36 @@ mod tests {
                     value: Expression::ConstInt(2),
                 },
             ],
+        );
+    }
+
+    #[test]
+    fn acmp_conditions_build_reference_comparisons() {
+        // if_acmpeq/if_acmpne must not degrade to /* cond */: enum and
+        // reference comparisons (the bulk of gson's unknown conditions).
+        let mut stack = vec![
+            StackValue::Expr(Expression::Local("a".to_string())),
+            StackValue::Expr(Expression::Local("b".to_string())),
+        ];
+        assert_eq!(
+            make_if_cond(0xa5, &mut stack),
+            Expression::Binary {
+                left: Box::new(Expression::Local("a".to_string())),
+                op: BinaryOp::Eq,
+                right: Box::new(Expression::Local("b".to_string())),
+            }
+        );
+        let mut stack = vec![
+            StackValue::Expr(Expression::Local("a".to_string())),
+            StackValue::Expr(Expression::Local("b".to_string())),
+        ];
+        assert_eq!(
+            make_if_cond(0xa6, &mut stack),
+            Expression::Binary {
+                left: Box::new(Expression::Local("a".to_string())),
+                op: BinaryOp::Ne,
+                right: Box::new(Expression::Local("b".to_string())),
+            }
         );
     }
 
