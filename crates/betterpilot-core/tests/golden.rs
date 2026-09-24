@@ -28,7 +28,10 @@ fn simple_test_class_decompiles_to_expected_source() {
         "var_2 = var_2 + 1",
         "System.out.println(var_1.toString())",
     ] {
-        assert!(source.contains(anchor), "golden anchor missing: {anchor}\n--- source ---\n{source}");
+        assert!(
+            source.contains(anchor),
+            "golden anchor missing: {anchor}\n--- source ---\n{source}"
+        );
     }
 
     // The loop body must be non-empty: if/else lives inside the while.
