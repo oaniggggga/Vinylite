@@ -2952,10 +2952,42 @@ fn ternary_value_ok(expr: &Expression) -> bool {
 }
 
 /// Collapse `if (c) { x = a; } else { x = b; }` into `x = c ? a : b;`
+/// (plus the implicit-else `if (c) { return a; } return b;` variant below)
 /// recursively across all statement bodies.
-fn reconstruct_ternaries(stmts: &mut [Statement]) {
+fn reconstruct_ternaries(stmts: &mut Vec<Statement>) {
     let mut i = 0;
     while i < stmts.len() {
+        // Rule 2 first: implicit else via fall-through return.
+        // `if (c) { return a; } return b;` -> `return c ? a : b;`
+        // Sound because the then-arm diverges (returns), so reaching the
+        // second return means `c` was false — an implicit else.
+        let fallthrough = match (&stmts[i], stmts.get(i + 1)) {
+            (
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body: None,
+                },
+                Some(Statement::Return(Some(b))),
+            ) => match then_body.as_slice() {
+                [Statement::Return(Some(a))] if ternary_value_ok(a) && ternary_value_ok(b) => {
+                    Some((condition.clone(), a.clone(), b.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((cond, a, b)) = fallthrough {
+            stmts[i] = Statement::Return(Some(Expression::Ternary {
+                condition: Box::new(cond),
+                then_expr: Box::new(a),
+                else_expr: Box::new(b),
+            }));
+            stmts.remove(i + 1);
+            i += 1;
+            continue;
+        }
+
         let (then_join, else_join, cond) = {
             let Statement::If {
                 condition,
@@ -3009,7 +3041,7 @@ fn reconstruct_ternaries(stmts: &mut [Statement]) {
     }
 }
 
-fn reconstruct_ternaries_recursive(stmts: &mut [Statement]) {
+fn reconstruct_ternaries_recursive(stmts: &mut Vec<Statement>) {
     reconstruct_ternaries(stmts);
     for stmt in stmts.iter_mut() {
         match stmt {
@@ -5925,6 +5957,52 @@ mod tests {
             debug.contains("ConstInt(1)") && debug.contains("ConstInt(2)"),
             "ternary arms wrong: {debug}"
         );
+    }
+
+    #[test]
+    fn ternary_reconstruction_from_early_return_fallthrough() {
+        // `if (c) { return -1; } return 1;` -> `return c ? -1 : 1;`
+        // (implicit else: the then-arm diverges, so fall-through means !c).
+        let mut stmts = vec![
+            Statement::If {
+                condition: Expression::Local("c".to_string()),
+                then_body: vec![Statement::Return(Some(Expression::ConstInt(-1)))],
+                else_body: None,
+            },
+            Statement::Return(Some(Expression::ConstInt(1))),
+        ];
+        reconstruct_ternaries_recursive(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![Statement::Return(Some(Expression::Ternary {
+                condition: Box::new(Expression::Local("c".to_string())),
+                then_expr: Box::new(Expression::ConstInt(-1)),
+                else_expr: Box::new(Expression::ConstInt(1)),
+            }))],
+        );
+    }
+
+    #[test]
+    fn ternary_does_not_fold_assignment_fallthrough() {
+        // `if (c) { x = a; } x = b;` is NOT a ternary: when c holds,
+        // x is assigned twice. Must be left alone.
+        let mut stmts = vec![
+            Statement::If {
+                condition: Expression::Local("c".to_string()),
+                then_body: vec![Statement::Assign {
+                    target: "x".to_string(),
+                    value: Expression::ConstInt(1),
+                }],
+                else_body: None,
+            },
+            Statement::Assign {
+                target: "x".to_string(),
+                value: Expression::ConstInt(2),
+            },
+        ];
+        let before = stmts.clone();
+        reconstruct_ternaries_recursive(&mut stmts);
+        assert_eq!(stmts, before);
     }
 
     #[test]
