@@ -17,7 +17,9 @@ obfuscated, and partially corrupted classfiles instead of giving up on them.
   (`flag != 0` -> `flag`, `x = 1` -> `x = true`), constant folding,
   lambda inlining, enum detection, inner-class merging;
 - ternary reconstruction (`cond ? a : b` from if/else assignments, paired
-  returns, and early-return-with-fallthrough `if (c) { return a; } return b;`);
+  returns, and early-return-with-fallthrough `if (c) { return a; } return b;`).
+  Deliberately flat-only: folds that would nest (`a ? b : (c ? d : e)`)
+  stay as explicit if/else for readability;
 - try/catch/finally reconstruction incl. multi-catch and
   try-with-resources (suppression-chain folding);
 - switch reconstruction (`tableswitch`/`lookupswitch` with multi-label

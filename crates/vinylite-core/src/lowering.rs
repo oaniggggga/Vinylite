@@ -2951,14 +2951,48 @@ fn ternary_value_ok(expr: &Expression) -> bool {
     !matches!(expr, Expression::Unknown(_))
 }
 
+/// Deep check: does this expression already contain a ternary anywhere?
+/// Deliberate readability cap — we only ever fold into a *single-level*
+/// ternary (`c ? a : b` with plain arms). Anything that would nest
+/// (`c ? (d ? e : f) : g`, chains, ternaries inside call args) is left as
+/// explicit if/else. Lambda bodies are a separate scope and don't count:
+/// they render as blocks, so a ternary inside one adds no visual nesting.
+fn contains_ternary(expr: &Expression) -> bool {
+    match expr {
+        Expression::Ternary { .. } => true,
+        Expression::FieldAccess { object, .. } => contains_ternary(object),
+        Expression::Binary { left, right, .. } => contains_ternary(left) || contains_ternary(right),
+        Expression::Unary { operand, .. } => contains_ternary(operand),
+        Expression::New { args, .. } | Expression::Invoke { args, .. } => {
+            args.iter().any(contains_ternary)
+        }
+        Expression::NewArray { size, .. } => contains_ternary(size),
+        Expression::ArrayAccess { array, index } => {
+            contains_ternary(array) || contains_ternary(index)
+        }
+        Expression::Cast { expr, .. } | Expression::InstanceOf { expr, .. } => {
+            contains_ternary(expr)
+        }
+        Expression::Concat { parts, .. } => parts.iter().any(contains_ternary),
+        Expression::Lambda { .. } => false,
+        _ => false,
+    }
+}
+
+/// A fold is allowed only when the resulting ternary stays single-level:
+/// no ternary in the condition or either arm.
+fn ternary_fold_ok(cond: &Expression, then_value: &Expression, else_value: &Expression) -> bool {
+    !contains_ternary(cond) && !contains_ternary(then_value) && !contains_ternary(else_value)
+}
+
 /// Collapse `if (c) { x = a; } else { x = b; }` into `x = c ? a : b;`
 /// (plus the implicit-else `if (c) { return a; } return b;` variant below)
 /// recursively across all statement bodies.
 ///
 /// Runs to a fixpoint: rule 1 can produce the `return` that rule 2 needs
-/// (`if (a) { return n; } if (b) { return x; } else { return y; }`), and
-/// rule 2 chains into nested ternaries
-/// (`if (a) return 1; if (b) return 2; return 3;`).
+/// (`if (a) { return n; } if (b) { return x; } else { return y; }`).
+/// Folds that would nest (`a ? 1 : (b ? 2 : 3)`) are deliberately skipped
+/// by `ternary_fold_ok` — chains stay as explicit if/else for readability.
 /// Terminates: rule 1 never creates an `If`, rule 2 shrinks the list.
 fn reconstruct_ternaries(stmts: &mut Vec<Statement>) {
     loop {
@@ -2979,7 +3013,10 @@ fn reconstruct_ternaries(stmts: &mut Vec<Statement>) {
                     Some(Statement::Return(Some(b))),
                 ) => match then_body.as_slice() {
                     [Statement::Return(Some(a))]
-                        if a != b && ternary_value_ok(a) && ternary_value_ok(b) =>
+                        if a != b
+                            && ternary_fold_ok(condition, a, b)
+                            && ternary_value_ok(a)
+                            && ternary_value_ok(b) =>
                     {
                         Some((condition.clone(), a.clone(), b.clone()))
                     }
@@ -3027,6 +3064,7 @@ fn reconstruct_ternaries(stmts: &mut Vec<Statement>) {
             if t_ret != e_ret
                 || t_target != e_target
                 || t_value == e_value
+                || !ternary_fold_ok(&cond, &t_value, &e_value)
                 || !ternary_value_ok(&t_value)
                 || !ternary_value_ok(&e_value)
             {
@@ -6007,10 +6045,11 @@ mod tests {
     }
 
     #[test]
-    fn ternary_chains_across_rules_to_fixpoint() {
-        // `if (a) { return 1; } if (b) { return 2; } else { return 3; }`
-        // needs two passes: rule 1 fuses the inner if/else, rule 2 then
-        // fuses the outer fall-through into a nested ternary.
+    fn ternary_does_not_nest_across_rules() {
+        // `if (a) { return 1; } if (b) { return 2; } else { return 3; }`:
+        // the inner if/else still fuses (flat), but the outer fall-through
+        // must NOT fold onto it — `a ? 1 : (b ? 2 : 3)` is deliberately
+        // left as explicit if/else for readability.
         let mut stmts = vec![
             Statement::If {
                 condition: Expression::Local("a".to_string()),
@@ -6026,16 +6065,47 @@ mod tests {
         reconstruct_ternaries_recursive(&mut stmts);
         assert_eq!(
             stmts,
-            vec![Statement::Return(Some(Expression::Ternary {
-                condition: Box::new(Expression::Local("a".to_string())),
-                then_expr: Box::new(Expression::ConstInt(1)),
-                else_expr: Box::new(Expression::Ternary {
+            vec![
+                Statement::If {
+                    condition: Expression::Local("a".to_string()),
+                    then_body: vec![Statement::Return(Some(Expression::ConstInt(1)))],
+                    else_body: None,
+                },
+                Statement::Return(Some(Expression::Ternary {
                     condition: Box::new(Expression::Local("b".to_string())),
                     then_expr: Box::new(Expression::ConstInt(2)),
                     else_expr: Box::new(Expression::ConstInt(3)),
-                }),
-            }))],
+                })),
+            ],
         );
+    }
+
+    #[test]
+    fn ternary_does_not_nest_in_call_args() {
+        // `if (c) { x = f(d ? 1 : 2); } else { x = 3; }` stays unfolded:
+        // folding would bury a ternary inside call args.
+        let nested = Expression::Ternary {
+            condition: Box::new(Expression::Local("d".to_string())),
+            then_expr: Box::new(Expression::ConstInt(1)),
+            else_expr: Box::new(Expression::ConstInt(2)),
+        };
+        let mut stmts = vec![Statement::If {
+            condition: Expression::Local("c".to_string()),
+            then_body: vec![Statement::Assign {
+                target: "x".to_string(),
+                value: Expression::Invoke {
+                    target: "f".to_string(),
+                    args: vec![nested],
+                },
+            }],
+            else_body: Some(vec![Statement::Assign {
+                target: "x".to_string(),
+                value: Expression::ConstInt(3),
+            }]),
+        }];
+        let before = stmts.clone();
+        reconstruct_ternaries_recursive(&mut stmts);
+        assert_eq!(stmts, before);
     }
 
     #[test]
