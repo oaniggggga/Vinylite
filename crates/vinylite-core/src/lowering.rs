@@ -4101,9 +4101,58 @@ fn remove_empty_if_blocks(stmts: &mut Vec<Statement>) {
 /// An exit with no matching enter at its level is the exceptional-path
 /// release living in a catch handler — dropped, the `Synchronized` node
 /// subsumes it. Unmatched enters (broken input) degrade the same way:
-/// the marker goes, the body stays. Recursion first, so nesting folds
-/// bottom-up.
+/// the marker goes, the body stays.
+///
+/// Pairing runs before recursing into children: an exit buried inside a
+/// following child (`enter, try { .. exit .. }`) must be claimed by the
+/// outer enter here, otherwise the recursion below would drop it as a
+/// stray. Inner balanced pairs are protected by depth counting during
+/// the descent, then folded by the recursion afterwards.
 fn fold_synchronized_recursive(stmts: &mut Vec<Statement>) {
+    let mut stack: Vec<(usize, Expression)> = Vec::new();
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    for stmt in stmts.drain(..) {
+        match stmt {
+            Statement::Monitor { enter: true, lock } => {
+                stack.push((out.len(), *lock));
+            }
+            Statement::Monitor { enter: false, .. } if !stack.is_empty() => {
+                let (start, lock) = stack.pop().expect("checked above");
+                let body: Vec<Statement> = out.drain(start..).collect();
+                out.push(Statement::Synchronized {
+                    lock: Box::new(lock),
+                    body,
+                });
+            }
+            Statement::Monitor { enter: false, .. } => {
+                // Exceptional-path release with no enter at this level.
+            }
+            mut other => {
+                // Optimized shapes (and synchronized-try nesting) bury the
+                // normal-path release inside a following child body instead
+                // of leaving it as a sibling: `enter, try { .. exit .. }`.
+                // If an enter is open, pull that exit up and close the
+                // region at this statement.
+                if !stack.is_empty() && take_nested_exit(&mut other) {
+                    let (start, lock) = stack.pop().expect("checked above");
+                    out.push(other);
+                    let body: Vec<Statement> = out.drain(start..).collect();
+                    out.push(Statement::Synchronized {
+                        lock: Box::new(lock),
+                        body,
+                    });
+                } else {
+                    out.push(other);
+                }
+            }
+        }
+    }
+    // Unmatched enters were never pushed to `out` — only their markers are
+    // gone, bodies stay exactly as before.
+    *stmts = out;
+
+    // Now fold inner levels (including the bodies of freshly built
+    // `Synchronized` nodes).
     for stmt in stmts.iter_mut() {
         match stmt {
             Statement::If {
@@ -4136,35 +4185,90 @@ fn fold_synchronized_recursive(stmts: &mut Vec<Statement>) {
             _ => {}
         }
     }
+}
 
-    let mut stack: Vec<(usize, Expression)> = Vec::new();
-    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
-    for stmt in stmts.drain(..) {
-        match stmt {
-            Statement::Monitor { enter: true, lock } => {
-                stack.push((out.len(), *lock));
+/// Search nested bodies for a surplus exit marker, removing it in place.
+/// Inner balanced enter/exit pairs are skipped via depth counting so only
+/// an exit belonging to an outer enter is taken.
+fn take_nested_exit(stmt: &mut Statement) -> bool {
+    match stmt {
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            take_nested_exit_list(then_body, &mut 0)
+                || else_body.as_mut().is_some_and(|eb| {
+                    let mut depth = 0;
+                    take_nested_exit_list(eb, &mut depth)
+                })
+        }
+        Statement::While { body, .. }
+        | Statement::Synchronized { body, .. }
+        | Statement::ForEach { body, .. } => {
+            let mut depth = 0;
+            take_nested_exit_list(body, &mut depth)
+        }
+        Statement::For {
+            init, update, body, ..
+        } => {
+            let mut depth = 0;
+            take_nested_exit_list(init, &mut depth)
+                || take_nested_exit_list(update, &mut depth)
+                || take_nested_exit_list(body, &mut depth)
+        }
+        Statement::Switch { arms, .. } => arms.iter_mut().any(|arm| {
+            let mut depth = 0;
+            take_nested_exit_list(&mut arm.body, &mut depth)
+        }),
+        Statement::TryCatch {
+            try_body,
+            catch_body,
+            finally_body,
+            ..
+        } => {
+            let mut depth = 0;
+            take_nested_exit_list(try_body, &mut depth)
+                || take_nested_exit_list(catch_body, &mut depth)
+                || finally_body.as_mut().is_some_and(|fin| {
+                    let mut depth = 0;
+                    take_nested_exit_list(fin, &mut depth)
+                })
+        }
+        _ => false,
+    }
+}
+
+fn take_nested_exit_list(stmts: &mut Vec<Statement>, depth: &mut usize) -> bool {
+    let mut i = 0;
+    while i < stmts.len() {
+        match &mut stmts[i] {
+            Statement::Monitor { enter: true, .. } => {
+                *depth += 1;
+            }
+            Statement::Monitor { enter: false, .. } if *depth > 0 => {
+                *depth -= 1;
             }
             Statement::Monitor { enter: false, .. } => {
-                if let Some((start, lock)) = stack.pop() {
-                    let body: Vec<Statement> = out.drain(start..).collect();
-                    out.push(Statement::Synchronized {
-                        lock: Box::new(lock),
-                        body,
-                    });
+                stmts.remove(i);
+                return true;
+            }
+            other => {
+                if take_nested_exit(other) {
+                    return true;
                 }
             }
-            other => out.push(other),
         }
+        i += 1;
     }
-    // Unmatched enters were never pushed to `out` — only their markers are
-    // gone, bodies stay exactly as before. Nothing left to do.
-    *stmts = out;
+    false
 }
 
 fn wrap_try_catch(
     offset_stmts: Vec<(usize, Statement)>,
     exception_table: &[crate::classfile::ExceptionEntry],
     pool: &Pool,
+    seen_ranges: &mut std::collections::HashSet<(usize, usize, u16)>,
 ) -> Vec<Statement> {
     // Build try ranges: (start_pc, end_pc, handler_pc, catch types).
     // Multi-catch (`catch (A | B e)`) emits one table entry per type with
@@ -4204,11 +4308,20 @@ fn wrap_try_catch(
             continue;
         }
 
-        // Check if this offset starts a try range (within first 25 bytes of start_pc)
-        if let Some(pos) = try_ranges
+        // Check if this offset starts a try range (within first 25 bytes of start_pc).
+        // Cycle guard: corrupt tables can re-match the identical
+        // (start, end, handler) triple forever down the recursion
+        // (e.g. handler_pc < start_pc with overlapping spans). The table
+        // is finite, so skipping repeats guarantees termination; the
+        // statements fall through to the plain path below.
+        let try_match = try_ranges
             .iter()
             .position(|r| r.0 <= offset && offset < r.0 + 25 && offset <= r.1)
-        {
+            .filter(|&pos| {
+                let r = &try_ranges[pos];
+                seen_ranges.insert((r.0, r.1, r.2))
+            });
+        if let Some(pos) = try_match {
             let (try_start, try_end, _handler_pc, catch_type_idxs) = try_ranges.remove(pos);
             // Collect try body: statements overlapping [try_start, try_end).
             // Statements carry their LAST instruction's offset, so a statement
@@ -4294,13 +4407,13 @@ fn wrap_try_catch(
                 .collect();
 
             let try_body_lowered = if !inner_table_try.is_empty() {
-                wrap_try_catch(try_body, &inner_table_try, pool)
+                wrap_try_catch(try_body, &inner_table_try, pool, seen_ranges)
             } else {
                 try_body.into_iter().map(|(_, s)| s).collect()
             };
 
             let catch_body_lowered = if !inner_table_catch.is_empty() {
-                wrap_try_catch(catch_body, &inner_table_catch, pool)
+                wrap_try_catch(catch_body, &inner_table_catch, pool, seen_ranges)
             } else {
                 catch_body.into_iter().map(|(_, s)| s).collect()
             };
@@ -4370,7 +4483,7 @@ fn wrap_try_catch_stmts(
         return stmts;
     }
     let offset_stmts: Vec<(usize, Statement)> = stmts.into_iter().enumerate().collect();
-    wrap_try_catch(offset_stmts, exception_table, pool)
+    wrap_try_catch(offset_stmts, exception_table, pool, &mut Default::default())
 }
 
 fn expr_references_var(expr: &Expression, var: &str) -> bool {
@@ -5627,7 +5740,12 @@ pub fn lower_method_to_ast(
 
     // Build try/catch structure from exception table, then clean up goto markers
     let mut statements = if !code.exception_table.is_empty() {
-        wrap_try_catch(restructured, &code.exception_table, pool)
+        wrap_try_catch(
+            restructured,
+            &code.exception_table,
+            pool,
+            &mut Default::default(),
+        )
     } else {
         restructured.into_iter().map(|(_, s)| s).collect()
     };
@@ -7281,6 +7399,49 @@ mod tests {
     }
 
     #[test]
+    fn synchronized_exit_inside_try_body_is_claimed() {
+        // Optimized `synchronized (o) { try { .. } ... }` shapes bury the
+        // normal-path release inside the try instead of leaving it as a
+        // sibling: the outer enter must claim it across the level.
+        let lock = Expression::Local("o".to_string());
+        let mut stmts = vec![
+            Statement::Monitor {
+                enter: true,
+                lock: Box::new(lock.clone()),
+            },
+            Statement::TryCatch {
+                try_body: vec![
+                    Statement::Expression(Expression::ConstInt(1)),
+                    Statement::Monitor {
+                        enter: false,
+                        lock: Box::new(lock.clone()),
+                    },
+                ],
+                catch_type: "Exception".to_string(),
+                catch_var: "e".to_string(),
+                catch_body: vec![],
+                resources: vec![],
+                finally_body: None,
+            },
+        ];
+        fold_synchronized_recursive(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![Statement::Synchronized {
+                lock: Box::new(lock),
+                body: vec![Statement::TryCatch {
+                    try_body: vec![Statement::Expression(Expression::ConstInt(1))],
+                    catch_type: "Exception".to_string(),
+                    catch_var: "e".to_string(),
+                    catch_body: vec![],
+                    resources: vec![],
+                    finally_body: None,
+                }],
+            }],
+        );
+    }
+
+    #[test]
     fn synchronized_markers_fold_and_strays_drop() {
         let lock = || Expression::Local("obj".to_string());
         let enter = || Statement::Monitor {
@@ -7396,6 +7557,25 @@ mod tests {
             stmts,
             vec![Statement::Return(Some(Expression::ConstInt(2)))]
         );
+    }
+
+    #[test]
+    fn try_wrap_self_covering_range_terminates() {
+        // Corrupt table: handler_pc < start_pc with overlapping spans.
+        // Without cycle protection the identical (start, end, handler)
+        // triple re-matches forever and overflows the stack.
+        let stmts: Vec<(usize, Statement)> = (0..30)
+            .map(|o| (o, Statement::Expression(Expression::ConstInt(o as i32))))
+            .collect();
+        let table = vec![crate::classfile::ExceptionEntry {
+            start_pc: 10,
+            end_pc: 20,
+            handler_pc: 5,
+            catch_type: 0,
+        }];
+        let pool: Vec<Recoverable<ConstantPoolEntry>> = vec![Recoverable::Missing];
+        let out = wrap_try_catch(stmts, &table, &pool, &mut Default::default());
+        assert!(!out.is_empty());
     }
 
     #[test]

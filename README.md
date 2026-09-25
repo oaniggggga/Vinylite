@@ -111,9 +111,9 @@ and JIT that Vinylite does not pay):
 
 | Jar | Classes | Vinylite | CFR 0.152 | Speedup |
 |---|---|---|---|---|
-| gson 2.11.0 | 224 | **0.20 s** | 1.57 s | 7.8x |
-| commons-lang3 3.14.0 | 404 | **0.54 s** | 3.42 s | 6.4x |
-| commons-io 2.15.1 | 339 | **0.31 s** | 2.50 s | 8.2x |
+| gson 2.11.0 | 224 | **0.20 s** | 1.48 s | 7.4x |
+| commons-lang3 3.14.0 | 404 | **0.46 s** | 3.16 s | 6.9x |
+| commons-io 2.15.1 | 339 | **0.31 s** | 2.41 s | 7.7x |
 
 Vinylite emits one `.java` per classfile including every nested/anonymous
 class; CFR inlines most anonymous classes into their parent and skips
@@ -132,6 +132,28 @@ shapes are reconstructed canonically.
 boolean-as-int returns are re-typed from the declared return type
 (`return 0;` in `()Z` renders `return false;`, incl. ternary arms);
 boolean locals/args rely on usage heuristics.
+
+## Robustness
+
+Measured where recovery-first matters, not just on clean libraries:
+
+- **Big jars** (time / peak RSS, Windows x64 release): Guava (2018
+  classes) 1.95 s / 77 MB vs CFR 9.00 s / 806 MB; Spring-core (1183
+  classes) 1.16 s / 55 MB vs 7.35 s / 650 MB; a 102 MB protected client
+  jar (1220 classes) 2.14 s / 236 MB vs 16.48 s / 926 MB. Zero panics,
+  zero stubs on all three.
+- **Corrupted input** (60 commons-io classes × 10 damage operators:
+  truncation, byte flips in pool/code zones, zeroed headers): Vinylite
+  always emits output — full render or named fallback stub with
+  diagnostics; CFR goes silent on 50–100% of damaged classes.
+  Full-render rate: flip1 82% vs 50%, flip5 42% vs 15%, flip20 7% vs 2%.
+  A try/catch cycle that overflowed the stack on adversarial tables is
+  guarded by a visited-set on ranges.
+- **Obfuscated input** (gson via ProGuard 7.10 renaming, `A`/`a` twins):
+  223/223 files via case-collision disambiguation with type renames
+  (no silent overwrites), 0 panics, `synchronized` 7 vs 10,
+  `@Override` 205 vs 284 (the rest needs JDK supertypes on the
+  classpath).
 
 ## Development
 

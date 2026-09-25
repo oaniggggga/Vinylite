@@ -410,7 +410,15 @@ fn write_folder(dir: &Path, files: &[(String, String)]) {
         std::process::exit(2);
     });
 
-    for (name, content) in files {
+    // ProGuard-style obfuscation routinely emits `A`/`a` twins that are
+    // distinct classes but the same file on case-insensitive filesystems.
+    // Without disambiguation the second silently overwrites the first.
+    let files = disambiguate_case_collisions(files);
+    let mut collisions = 0usize;
+    for (name, content) in &files {
+        if content.contains("filesystem case collision") {
+            collisions += 1;
+        }
         let file_path = dir.join(name);
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent).unwrap_or_else(|e| {
@@ -423,6 +431,306 @@ fn write_folder(dir: &Path, files: &[(String, String)]) {
             std::process::exit(2);
         });
     }
+    if collisions > 0 {
+        eprintln!("warning: {collisions} file(s) renamed (filesystem case collision)");
+    }
+}
+
+/// Resolve case-insensitive path collisions between output files.
+///
+/// Returns `(path, content)` pairs where every path is unique even under
+/// case-insensitive comparison. The first member of a collision group keeps
+/// its path; the rest get a `_<n>` stem suffix, a header comment with the
+/// original class, and a matching rename of the top-level type declaration
+/// plus its constructors/`new`/`.class` references, so each file stays
+/// self-consistent. Cross-file references to renamed classes are NOT
+/// rewritten (documented limitation, shared with the general inner-class
+/// merging approach).
+fn disambiguate_case_collisions(files: &[(String, String)]) -> Vec<(String, String)> {
+    use std::collections::{HashMap, HashSet};
+
+    // Group indices by lowercase path, preserving input order.
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for (idx, (path, _)) in files.iter().enumerate() {
+        let key = path.to_lowercase();
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(idx);
+    }
+    let needs_work = groups.values().any(|g| g.len() > 1);
+    if !needs_work {
+        return files.to_vec();
+    }
+
+    let mut used: HashSet<String> = files.iter().map(|(path, _)| path.to_lowercase()).collect();
+    let mut renamed: HashMap<usize, (String, String, String)> = HashMap::new();
+    // (idx) -> (new_path, old_simple, new_simple)
+    for key in &order {
+        let members = &groups[key];
+        if members.len() < 2 {
+            continue;
+        }
+        for (n, &idx) in members.iter().enumerate().skip(1) {
+            let (path, _) = &files[idx];
+            let (dir, stem, ext) = split_file_path(path);
+            let mut candidate_n = n - 1;
+            let new_stem = loop {
+                let candidate = format!("{stem}_{candidate_n}");
+                let candidate_path = join_file_path(&dir, &candidate, &ext);
+                if used.insert(candidate_path.to_lowercase()) {
+                    break candidate;
+                }
+                candidate_n += 1;
+            };
+            let new_path = join_file_path(&dir, &new_stem, &ext);
+            renamed.insert(idx, (new_path, stem.clone(), new_stem));
+        }
+    }
+
+    files
+        .iter()
+        .enumerate()
+        .map(|(idx, (path, content))| match renamed.get(&idx) {
+            Some((new_path, old_simple, new_simple)) => (
+                new_path.clone(),
+                rename_top_level_type(content, path, old_simple, new_simple),
+            ),
+            None => (path.clone(), content.clone()),
+        })
+        .collect()
+}
+
+fn split_file_path(path: &str) -> (String, String, String) {
+    let slash = path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let dir = path[..slash].to_string();
+    let file = &path[slash..];
+    match file.rfind('.') {
+        Some(dot) => (dir, file[..dot].to_string(), file[dot..].to_string()),
+        None => (dir, file.to_string(), String::new()),
+    }
+}
+
+fn join_file_path(dir: &str, stem: &str, ext: &str) -> String {
+    format!("{dir}{stem}{ext}")
+}
+
+/// Rename the top-level type in one rendered file after a case-collision
+/// disambiguation: header comment, the `public class Old` declaration,
+/// same-indented constructors, method return types, field declarations,
+/// extends/implements/throws/instanceof clauses, `new Old(`
+/// instantiations and `Old.class` literals. Word-boundary aware so `Old`
+/// never matches `Older` or locals like `old`. Cross-file references,
+/// casts, annotations and generic arguments are NOT rewritten
+/// (documented limitation).
+fn rename_top_level_type(content: &str, original_path: &str, old: &str, new: &str) -> String {
+    let original_class = original_path
+        .replace('/', ".")
+        .strip_suffix(".java")
+        .unwrap_or(original_path)
+        .to_string();
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    // Header comment goes right after the watermark line.
+    let note = format!("// Original class: {original_class} (renamed: filesystem case collision)");
+    if lines
+        .first()
+        .is_some_and(|l| l.starts_with("// Decompiled by"))
+    {
+        lines.insert(1, note);
+    } else {
+        lines.insert(0, note);
+    }
+    let mut renamed_decl = false;
+    for line in lines.iter_mut() {
+        // Top-level type declaration: `public ... class|interface|enum Old`.
+        // Only the first (column-0) match is the file's own type; indented
+        // inner types are left alone.
+        if !renamed_decl && let Some(rest) = line.strip_prefix("public ") {
+            let mut best: Option<(usize, usize)> = None;
+            for keyword in ["class ", "interface ", "enum ", "@interface "] {
+                if let Some(pos) = rest.find(keyword)
+                    && best.is_none_or(|(best_pos, _)| pos < best_pos)
+                {
+                    best = Some((pos, keyword.len()));
+                }
+            }
+            if let Some((pos, len)) = best {
+                let name_pos = pos + len;
+                if rest[name_pos..].starts_with(old)
+                    && rest[name_pos + old.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !is_ident_char(c))
+                {
+                    *line = format!(
+                        "public {}{}{}",
+                        &rest[..name_pos],
+                        new,
+                        &rest[name_pos + old.len()..]
+                    );
+                    renamed_decl = true;
+                    continue;
+                }
+            }
+        }
+        // Same-indented constructor declarations `    Old(`.
+        if line.starts_with("    ")
+            && let Some(after) = line[4..].strip_prefix(old)
+            && after.starts_with('(')
+        {
+            *line = format!("    {new}{after}");
+            continue;
+        }
+        // Method return types and field declarations `    [modifiers] Old name[(=;]`.
+        if let Some(rewritten) = rename_leading_type_use(line, old, new) {
+            *line = replace_type_token(&rewritten, old, new);
+            continue;
+        }
+        // extends/implements/throws/instanceof clauses plus `new Old(`,
+        // `Old.class` and `Old::x` references.
+        *line = rename_clause_types(line, old, new);
+        *line = replace_type_token(line, old, new);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Rename a leading type use on a class-level member line:
+/// `    [modifiers...] Old name(` (method return type) or
+/// `    [modifiers...] Old name [=;]` (field declaration).
+/// Returns `None` when the line has any other shape.
+fn rename_leading_type_use(line: &str, old: &str, new: &str) -> Option<String> {
+    const MODIFIERS: &[&str] = &[
+        "public",
+        "private",
+        "protected",
+        "static",
+        "final",
+        "abstract",
+        "synchronized",
+        "native",
+        "strictfp",
+        "transient",
+        "volatile",
+        "default",
+    ];
+    let mut rest = line.strip_prefix("    ")?;
+    let mut prefix_len = 4;
+    let (type_word, after_type) = loop {
+        let word_end = rest.find(|c: char| !is_ident_char(c)).unwrap_or(rest.len());
+        if word_end == 0 {
+            return None;
+        }
+        let word = &rest[..word_end];
+        if MODIFIERS.contains(&word) {
+            let spaces = rest[word_end..].len() - rest[word_end..].trim_start_matches(' ').len();
+            if spaces == 0 {
+                return None;
+            }
+            prefix_len += word_end + spaces;
+            rest = &rest[word_end + spaces..];
+            continue;
+        }
+        break (word, &rest[word_end..]);
+    };
+    if type_word != old {
+        return None;
+    }
+    // `Old` must be followed by a member name and `(`, `=` or `;`.
+    let tail = after_type.trim_start_matches(' ');
+    if tail.is_empty() || tail.starts_with('(') || tail.starts_with('.') {
+        return None;
+    }
+    let name_end = tail.find(|c: char| !is_ident_char(c)).unwrap_or(tail.len());
+    if name_end == 0 {
+        return None;
+    }
+    let after_name = tail[name_end..].trim_start_matches(' ');
+    if !(after_name.starts_with('(') || after_name.starts_with('=') || after_name.starts_with(';'))
+    {
+        return None;
+    }
+    Some(format!(
+        "{}{new}{}",
+        &line[..prefix_len],
+        &line[prefix_len + old.len()..]
+    ))
+}
+
+/// Rename whole-word `Old` inside `extends`/`implements`/`throws` clauses
+/// and `instanceof` checks on one line. Casts, annotations and generic
+/// arguments are deliberately left alone (documented limitation).
+fn rename_clause_types(line: &str, old: &str, new: &str) -> String {
+    let mut out = line.to_string();
+    for keyword in ["extends ", "implements ", "throws ", "instanceof "] {
+        if let Some(pos) = out.find(keyword) {
+            let head_end = pos + keyword.len();
+            let (head, tail) = out.split_at(head_end);
+            out = format!("{head}{}", replace_whole_word(tail, old, new));
+        }
+    }
+    out
+}
+
+/// Replace whole-word occurrences of `old` with `new`.
+fn replace_whole_word(text: &str, old: &str, new: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find(old) {
+        let before_ok = pos == 0
+            || rest[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident_char(c));
+        let after_ok = rest[pos + old.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_ident_char(c));
+        if before_ok && after_ok {
+            out.push_str(&rest[..pos]);
+            out.push_str(new);
+            rest = &rest[pos + old.len()..];
+        } else {
+            out.push_str(&rest[..pos + old.len()]);
+            rest = &rest[pos + old.len()..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// Replace `new Old(`, `Old.class` and `Old::x` where `Old` is a whole
+/// identifier (never a prefix of a longer name, never a qualified tail
+/// like `pkg.Old` — our renderer always uses short names with imports).
+fn replace_type_token(line: &str, old: &str, new: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find(old) {
+        let before_ok = pos == 0
+            || rest[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_ident_char(c) && c != '.');
+        let after = &rest[pos + old.len()..];
+        let after_ok =
+            after.starts_with('(') || after.starts_with(".class") || after.starts_with("::");
+        if before_ok && after_ok {
+            out.push_str(&rest[..pos]);
+            out.push_str(new);
+            rest = after;
+        } else {
+            out.push_str(&rest[..pos + old.len()]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn get_inner_class_full_name(class: &vinylite_core::ClassFile, class_index: u16) -> Option<String> {
@@ -457,5 +765,87 @@ fn get_utf8_from_pool(
             vinylite_core::classfile::ConstantPoolEntry::Utf8(s),
         )) => Some(s.clone()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn twin_files() -> Vec<(String, String)> {
+        vec![
+            (
+                "com/example/F.java".to_string(),
+                "// Decompiled by Vinylite v0\npublic final class F {\n    F() {\n    }\n}\n"
+                    .to_string(),
+            ),
+            (
+                "com/example/f.java".to_string(),
+                "// Decompiled by Vinylite v0\npublic class f {\n    public static f make() {\n        return new f();\n    }\n}\n"
+                    .to_string(),
+            ),
+            (
+                "com/example/Plain.java".to_string(),
+                "// Decompiled by Vinylite v0\npublic class Plain {\n}\n".to_string(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn case_twins_are_disambiguated_without_loss() {
+        let out = disambiguate_case_collisions(&twin_files());
+        let paths: Vec<&str> = out.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths.len(), 3);
+        // First twin keeps its path.
+        assert!(paths.contains(&"com/example/F.java"));
+        // Second twin is renamed deterministically; no silent overwrite.
+        assert!(paths.contains(&"com/example/f_0.java"));
+        assert!(paths.contains(&"com/example/Plain.java"));
+        let renamed = out
+            .iter()
+            .find(|(p, _)| p == "com/example/f_0.java")
+            .map(|(_, c)| c.clone())
+            .expect("renamed twin present");
+        assert!(
+            renamed.contains("Original class: com.example.f"),
+            "header comment missing:\n{renamed}"
+        );
+        assert!(
+            renamed.contains("public class f_0 {"),
+            "declaration not renamed:\n{renamed}"
+        );
+        assert!(
+            renamed.contains("return new f_0();"),
+            "instantiation not renamed:\n{renamed}"
+        );
+        assert!(
+            renamed.contains("public static f_0 make()"),
+            "factory return type not renamed:\n{renamed}"
+        );
+        assert!(
+            !renamed.contains("class f {") && !renamed.contains("new f("),
+            "stale references remain:\n{renamed}"
+        );
+        // Untouched files pass through byte-identical.
+        let plain = out
+            .iter()
+            .find(|(p, _)| p == "com/example/Plain.java")
+            .unwrap();
+        assert_eq!(plain.1, twin_files()[2].1);
+    }
+
+    #[test]
+    fn replace_type_token_respects_word_boundaries() {
+        // `F` must not match inside `Foo`, `AF`, or locals like `of`.
+        let line = "Foo x = new Foo(); AF y = of;";
+        assert_eq!(replace_type_token(line, "F", "F_0"), line);
+        assert_eq!(
+            replace_type_token("return new F();", "F", "F_0"),
+            "return new F_0();"
+        );
+        assert_eq!(
+            replace_type_token("Class<?> c = F.class;", "F", "F_0"),
+            "Class<?> c = F_0.class;"
+        );
     }
 }
