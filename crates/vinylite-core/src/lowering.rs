@@ -1122,10 +1122,19 @@ impl<'a> StackMachine<'a> {
                     }
                     0xc0 => {
                         let val = self.pop();
-                        self.push(Expression::Cast {
-                            target_type: display,
-                            expr: Box::new(val),
-                        });
+                        // Elide provably redundant checkcasts the way
+                        // CFR/Vineflower do via dataflow (subset we can prove
+                        // locally): stacked identical casts collapse, `new`
+                        // needs no cast to its own type, and a call whose
+                        // uniquely-resolved concrete return already matches
+                        // needs none either. Anything else is kept.
+                        match elide_redundant_cast(self.pool, &val, &class) {
+                            Some(replacement) => self.push(replacement),
+                            None => self.push(Expression::Cast {
+                                target_type: display,
+                                expr: Box::new(val),
+                            }),
+                        }
                     }
                     0xc1 => {
                         let val = self.pop();
@@ -1305,6 +1314,110 @@ fn convert_type(opcode: u8) -> &'static str {
         0x92 => "char",
         0x93 => "short",
         _ => "int",
+    }
+}
+
+/// Normalize a type name for checkcast-redundancy comparison: field
+/// descriptors, slashes and dotted forms unify (`Ljava/io/File;`,
+/// `java/io/File`, `java.io.File` → `java.io.File`); short names stay
+/// short and compare short.
+fn normalize_cast_type(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.starts_with('[') {
+        let dims = raw.bytes().take_while(|&b| b == b'[').count();
+        let mut inner = &raw[dims..];
+        if inner.starts_with('L') && inner.ends_with(';') && inner.len() >= 2 {
+            inner = &inner[1..inner.len() - 1];
+        }
+        let mut dotted = inner.replace('/', ".");
+        for _ in 0..dims {
+            dotted.push_str("[]");
+        }
+        return dotted;
+    }
+    let mut s = raw.to_string();
+    if s.starts_with('L') && s.ends_with(';') && s.contains('/') {
+        s = s[1..s.len() - 1].to_string();
+    }
+    s.replace('/', ".")
+}
+
+fn short_cast_name(normalized: &str) -> &str {
+    normalized.rsplit('.').next().unwrap_or(normalized)
+}
+
+/// Concrete return type (normalized) for `ClassShort.method` when the
+/// constant pool resolves it to exactly one distinct return descriptor.
+/// Overloads with different returns, generics (`TT;`, `Object`) and
+/// unknown shapes decline by yielding `None`.
+fn unique_method_return(pool: &Pool, class_short: &str, method: &str) -> Option<String> {
+    use std::collections::HashSet;
+    let mut returns = HashSet::new();
+    for (index, entry) in pool.iter().enumerate() {
+        let is_method = matches!(
+            entry,
+            Recoverable::Present(ConstantPoolEntry::MethodRef { .. })
+                | Recoverable::Present(ConstantPoolEntry::InterfaceMethodRef { .. })
+        );
+        if !is_method {
+            continue;
+        }
+        let (class, name, descriptor) = cp_method_ref(pool, index as u16);
+        if short_name(&class) != class_short || name != method {
+            continue;
+        }
+        let ret = descriptor.split(')').nth(1).unwrap_or("");
+        if ret.is_empty() {
+            continue;
+        }
+        returns.insert(normalize_cast_type(ret));
+    }
+    if returns.len() == 1 {
+        returns.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// Prove a `checkcast` redundant without full dataflow, or return `None`.
+/// Sound for loadable input: stacked identical casts collapse, `new`
+/// needs no cast to its own type, and a call whose uniquely-resolved
+/// concrete return already matches needs none either. Anything else
+/// (subtype relations need a hierarchy, generics need inference) is kept.
+fn elide_redundant_cast(
+    pool: &Pool,
+    operand: &Expression,
+    cast_raw_name: &str,
+) -> Option<Expression> {
+    let want = normalize_cast_type(cast_raw_name);
+    let want_short = short_cast_name(&want).to_string();
+    match operand {
+        Expression::Cast { target_type, expr } => {
+            if short_cast_name(&normalize_cast_type(target_type)) == want_short {
+                return Some((**expr).clone());
+            }
+            None
+        }
+        Expression::New { class, .. } => {
+            if short_cast_name(&normalize_cast_type(class)) == want_short {
+                return Some(operand.clone());
+            }
+            None
+        }
+        Expression::Invoke { target, .. } => {
+            let (class_short, method) = match target.rsplit_once('.') {
+                Some((c, m)) => (c, m),
+                None => return None,
+            };
+            if class_short.is_empty() || method.is_empty() {
+                return None;
+            }
+            match unique_method_return(pool, class_short, method) {
+                Some(ret) if short_cast_name(&ret) == want_short => Some(operand.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -8008,6 +8121,62 @@ mod tests {
             }
             other => panic!("expected TryCatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn redundant_checkcasts_elide_safely() {
+        // Pool: class com/foo/Util with one method getFile()Lcom/foo/File;.
+        let pool: Vec<Recoverable<ConstantPoolEntry>> = vec![
+            Recoverable::Missing,
+            Recoverable::Present(ConstantPoolEntry::Utf8("com/foo/Util".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 1 }),
+            Recoverable::Present(ConstantPoolEntry::Utf8("com/foo/File".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Class { name_index: 3 }),
+            Recoverable::Present(ConstantPoolEntry::Utf8("getFile".to_string())),
+            Recoverable::Present(ConstantPoolEntry::Utf8("()Lcom/foo/File;".to_string())),
+            Recoverable::Present(ConstantPoolEntry::NameAndType {
+                name_index: 5,
+                descriptor_index: 6,
+            }),
+            Recoverable::Present(ConstantPoolEntry::MethodRef {
+                class_index: 2,
+                name_and_type_index: 7,
+            }),
+        ];
+        let call = Expression::Invoke {
+            target: "Util.getFile".to_string(),
+            args: vec![],
+        };
+        // Matching concrete return elides.
+        assert_eq!(
+            elide_redundant_cast(&pool, &call, "com/foo/File"),
+            Some(call.clone())
+        );
+        // Non-matching target is kept.
+        assert_eq!(elide_redundant_cast(&pool, &call, "com/foo/Other"), None);
+        // Stacked identical casts collapse one level per checkcast.
+        let stacked = Expression::Cast {
+            target_type: "File".to_string(),
+            expr: Box::new(call.clone()),
+        };
+        assert_eq!(
+            elide_redundant_cast(&pool, &stacked, "com/foo/File"),
+            Some(call.clone())
+        );
+        // `new` needs no cast to its own type.
+        let fresh = Expression::New {
+            class: "com.foo.Widget".to_string(),
+            args: vec![],
+        };
+        assert_eq!(
+            elide_redundant_cast(&pool, &fresh, "com/foo/Widget"),
+            Some(fresh.clone())
+        );
+        // ...but keeps casts to anything else.
+        assert_eq!(elide_redundant_cast(&pool, &fresh, "com/foo/Gadget"), None);
+        // Locals are never provable here: kept.
+        let local = Expression::Local("x".to_string());
+        assert_eq!(elide_redundant_cast(&pool, &local, "com/foo/File"), None);
     }
 
     #[test]
