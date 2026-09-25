@@ -807,15 +807,62 @@ fn render_expression(expr: &Expression) -> String {
     render_expression_at(expr, 0)
 }
 
+/// Escape a string for a Java string literal: backslashes, quotes and every
+/// control character (a raw newline would terminate the literal and break
+/// compilation — the top recomp-bench failure on gson).
+fn escape_java_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Format a float/double constant as a valid Java literal. Rust prints
+/// non-finite values as `inf`/`NaN`, which do not compile.
+fn format_float_literal<T>(value: T, single: bool) -> String
+where
+    T: Into<f64> + Copy,
+{
+    let v: f64 = value.into();
+    let prefix = if single { "Float" } else { "Double" };
+    if v.is_nan() {
+        return format!("{prefix}.NaN");
+    }
+    if v.is_infinite() {
+        return format!(
+            "{prefix}.{}INFINITY",
+            if v.is_sign_positive() {
+                "POSITIVE_"
+            } else {
+                "NEGATIVE_"
+            }
+        );
+    }
+    if single {
+        format!("{v:?}f")
+    } else {
+        format!("{v:?}")
+    }
+}
+
 fn render_expression_at(expr: &Expression, indent: usize) -> String {
     let re = |e: &Expression| render_expression_at(e, indent);
     match expr {
         Expression::ConstInt(v) => v.to_string(),
         Expression::ConstLong(v) => format!("{v}L"),
-        Expression::ConstFloat(v) => format!("{v}f"),
-        Expression::ConstDouble(v) => format!("{v}d"),
+        Expression::ConstFloat(v) => format_float_literal(*v, true),
+        Expression::ConstDouble(v) => format_float_literal(*v, false),
         Expression::ConstString(s) => {
-            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+            format!("\"{}\"", escape_java_string(s))
         }
         Expression::ConstNull => "null".to_string(),
         Expression::This => "this".to_string(),
@@ -1097,6 +1144,27 @@ mod tests {
         assert!(out.contains("public native void wait0();"), "{out}");
         let out = render_single_method(method_with_flags("run", 0x0400));
         assert!(out.contains("abstract void run();"), "{out}");
+    }
+
+    #[test]
+    fn escapes_string_literals_and_float_edge_cases() {
+        let lit = render_expression(&Expression::ConstString(
+            "a\nb\rc\td\"e\\f\u{1}g".to_string(),
+        ));
+        assert_eq!(lit, "\"a\\nb\\rc\\td\\\"e\\\\f\\u0001g\"", "{lit}");
+        assert_eq!(
+            render_expression(&Expression::ConstFloat(f32::NAN)),
+            "Float.NaN"
+        );
+        assert_eq!(
+            render_expression(&Expression::ConstFloat(f32::NEG_INFINITY)),
+            "Float.NEGATIVE_INFINITY"
+        );
+        assert_eq!(render_expression(&Expression::ConstFloat(1.0)), "1.0f");
+        assert_eq!(
+            render_expression(&Expression::ConstDouble(f64::NAN)),
+            "Double.NaN"
+        );
     }
 
     #[test]
