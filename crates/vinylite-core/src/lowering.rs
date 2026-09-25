@@ -3287,58 +3287,95 @@ fn try_catch_has_synthetic_close_handler(tc: &Statement) -> bool {
 /// Everything the compiler synthesizes (close calls, the suppression chain)
 /// is deleted: javac regenerates it from `try (...)`.
 fn fold_try_with_resources(stmts: &mut Vec<Statement>) {
+    if std::env::var("VINYLITE_DUMP_FOLD").is_ok() {
+        for s in stmts.iter() {
+            eprintln!("FOLD-IN {s:?}");
+        }
+    }
     let mut i = 0;
     while i < stmts.len() {
-        // 1. Match the primary Throwable handler with the nested suppress try.
-        let close_target: Option<String> = {
-            let Statement::TryCatch {
-                catch_type,
-                catch_body,
-                ..
-            } = &stmts[i]
-            else {
-                i += 1;
-                continue;
-            };
-            if catch_body.len() != 1 {
-                i += 1;
-                continue;
+        let res =
+            match_primary_suppress_try(stmts, i).or_else(|| match_null_guarded_close(stmts, i));
+        if let Some(res) = res {
+            match hoist_twr_resource(stmts, i, &res) {
+                Some(next) => i = next,
+                None => i += 1,
             }
-            if catch_type != "Throwable" {
-                // close-cannot-throw shape: the compiler leaves the resource
-                // outside the try and the user catch handles everything.
-                // Accept it; the sibling close + suppression check below
-                // still applies.
-            }
-            let Statement::TryCatch {
-                try_body: inner_try,
-                catch_body: inner_catch,
-                ..
-            } = &catch_body[0]
-            else {
-                i += 1;
-                continue;
-            };
-            if inner_try.len() != 1 {
-                i += 1;
-                continue;
-            }
-            let Statement::Expression(Expression::Invoke { target, args }) = &inner_try[0] else {
-                i += 1;
-                continue;
-            };
-            if !args.is_empty() || !target.ends_with(".close") {
-                i += 1;
-                continue;
-            }
-            let suppresses = inner_catch.iter().any(|s| {
-                let rendered = format!("{s:?}");
-                rendered.contains("addSuppressed") || rendered.contains("throw ")
-            });
-            if !suppresses {
-                i += 1;
-                continue;
-            }
+            continue;
+        }
+        // Restructured-handler shape (no TryCatch node survived wrapping).
+        match fold_structured_handler_close(stmts, i) {
+            Some(next) => i = next,
+            None => i += 1,
+        }
+    }
+}
+
+/// Match the primary Throwable handler with the nested suppress try:
+/// `try { .. } catch (Throwable e) { try { res.close(); } catch (..) {
+/// ..addSuppressed/throw.. } }`. Returns the resource variable name.
+fn match_primary_suppress_try(stmts: &[Statement], i: usize) -> Option<String> {
+    let Statement::TryCatch {
+        catch_type,
+        catch_body,
+        ..
+    } = &stmts[i]
+    else {
+        return None;
+    };
+    if catch_body.len() != 1 {
+        return None;
+    }
+    if catch_type != "Throwable" {
+        // close-cannot-throw shape: the compiler leaves the resource
+        // outside the try and the user catch handles everything.
+        // Accept it; the sibling close + suppression check below
+        // still applies.
+    }
+    let Statement::TryCatch {
+        try_body: inner_try,
+        catch_body: inner_catch,
+        ..
+    } = &catch_body[0]
+    else {
+        return None;
+    };
+    if inner_try.len() != 1 {
+        return None;
+    }
+    let Statement::Expression(Expression::Invoke { target, args }) = &inner_try[0] else {
+        return None;
+    };
+    if !args.is_empty() || !target.ends_with(".close") {
+        return None;
+    }
+    let suppresses = inner_catch.iter().any(|s| {
+        let rendered = format!("{s:?}");
+        rendered.contains("addSuppressed") || rendered.contains("throw ")
+    });
+    if !suppresses {
+        return None;
+    }
+    Some(
+        target
+            .strip_suffix(".close")
+            .unwrap_or("")
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+/// `res.close();` as a single-statement arm → the resource name.
+fn close_arm_target(arm: &[Statement]) -> Option<String> {
+    if arm.len() != 1 {
+        return None;
+    }
+    match &arm[0] {
+        Statement::Expression(Expression::Invoke { target, args })
+            if args.is_empty() && target.ends_with(".close") =>
+        {
             Some(
                 target
                     .strip_suffix(".close")
@@ -3348,112 +3385,397 @@ fn fold_try_with_resources(stmts: &mut Vec<Statement>) {
                     .unwrap_or("")
                     .to_string(),
             )
-        };
-        let Some(res) = close_target else { continue };
+        }
+        _ => None,
+    }
+}
 
-        // 2. The resource declaration must sit immediately before the try.
-        //    The decl is keyed at its LAST instruction offset, which may land
-        //    before the try range start while earlier decls (or other
-        //    statements) sit between it and the try: walk back over any
-        //    statements that do not touch the resource.
-        let mut decl_pos = None;
-        if i > 0 {
-            for back in (0..i).rev() {
-                let rendered = format!("{:?}", stmts[back]);
-                if rendered.contains(&res) {
-                    decl_pos = Some(back);
-                    break;
-                }
-                if back < i - 2 {
-                    break;
-                }
+/// `res == null` / `res != null` in either operand order.
+fn is_null_check(cond: &Expression, res: &str) -> bool {
+    match cond {
+        Expression::Binary { left, right, .. } => {
+            let is_null = |e: &Expression| matches!(e, Expression::ConstNull);
+            let is_res = |e: &Expression| matches!(e, Expression::Local(n) if n == res);
+            (is_res(left) && is_null(right)) || (is_null(left) && is_res(right))
+        }
+        _ => false,
+    }
+}
+
+/// An arm containing `prim.addSuppressed(x)` (single argument).
+fn suppresses_on_prim(arm: &[Statement], prim: &str) -> bool {
+    arm.iter().any(|s| match s {
+        Statement::Expression(Expression::Invoke { target, args }) => {
+            target == &format!("{prim}.addSuppressed") && args.len() == 1
+        }
+        _ => false,
+    })
+}
+
+/// `throw <prim>;` (lowered as raw text) → the primary variable name.
+fn thrown_prim(stmt: &Statement) -> Option<String> {
+    match stmt {
+        Statement::Expression(Expression::Unknown(text)) => text
+            .strip_prefix("throw ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Walk back from a try at `i` to the resource declaration: the nearest
+/// preceding statement mentioning `res` (declaration offsets key at their
+/// last instruction, so a small window is scanned).
+fn find_resource_decl(stmts: &[Statement], i: usize, res: &str) -> Option<usize> {
+    if i > 0 {
+        for back in (0..i).rev() {
+            let rendered = format!("{:?}", stmts[back]);
+            if rendered.contains(res) {
+                return Some(back);
+            }
+            if back < i - 2 {
+                break;
             }
         }
-        let Some(dp) = decl_pos else {
-            i += 1;
-            continue;
-        };
-        let try_pos = dp + 1;
-        let resource = match std::mem::replace(&mut stmts[dp], Statement::Unknown(String::new())) {
+    }
+    None
+}
+
+/// Declaration search for the restructured-handler rule: unlike
+/// [`find_resource_decl`], body statements using the resource sit between
+/// the declaration and the guard, so only a `VarDecl`/`Assign` *target*
+/// counts (a use never does). Scans further back; the nearest target wins
+/// (reassignments resolve correctly).
+fn find_tw_resource_decl(stmts: &[Statement], i: usize, res: &str) -> Option<usize> {
+    for back in (0..i).rev().take(30) {
+        match &stmts[back] {
             Statement::VarDecl {
                 target,
-                var_type,
-                value: Some(value),
-            } if target == res => Statement::VarDecl {
-                target,
-                var_type,
-                value: Some(value),
-            },
-            Statement::Assign { target, value } if target == res => Statement::VarDecl {
-                target,
-                var_type: None,
-                value: Some(value),
-            },
-            other => {
-                stmts[dp] = other;
-                i += 1;
-                continue;
-            }
-        };
-        // The slot that held the declaration is gone from the statement
-        // stream; shift the list so no empty placeholder renders.
-        stmts.remove(dp);
-        let try_pos = try_pos - 1;
+                value: Some(_),
+                ..
+            } if target == res => return Some(back),
+            Statement::Assign { target, .. } if target == res => return Some(back),
+            _ => {}
+        }
+    }
+    None
+}
 
-        // 3. Empty the synthetic handler and lift the declaration.
-        let mut tc = std::mem::replace(&mut stmts[try_pos], Statement::Unknown(String::new()));
-        let Statement::TryCatch {
-            try_body: ref mut try_body_slot,
-            catch_body: ref mut catch_body_slot,
-            resources: ref mut resources_slot,
-            ..
-        } = tc
-        else {
-            unreachable!()
-        };
-        catch_body_slot.clear();
-        resources_slot.push(resource);
+/// Match the javac null-guarded-close TWR shape:
+///
+/// ```java
+/// try { ... }
+/// catch (Throwable e) {
+///     if (res == null) { primary.addSuppressed(closeEx); }
+///     else { res.close(); }
+///     throw primary;
+/// }
+/// if (res != null) { res.close(); }
+/// ```
+///
+/// (arm polarity may vary; what matters is one `res.close()` arm, one
+/// `addSuppressed` arm on the thrown primary, and the guarded sibling
+/// close). Returns the resource variable name.
+fn match_null_guarded_close(stmts: &[Statement], i: usize) -> Option<String> {
+    let Statement::TryCatch {
+        catch_type,
+        catch_body,
+        ..
+    } = &stmts[i]
+    else {
+        return None;
+    };
+    if catch_type != "Throwable" || catch_body.len() != 2 {
+        return None;
+    }
+    let (cond, then_body, else_body) = match &catch_body[0] {
+        Statement::If {
+            condition,
+            then_body,
+            else_body: Some(else_body),
+        } => (condition, then_body, else_body),
+        _ => return None,
+    };
+    // Terminal rethrow of the primary exception: `throw <prim>`.
+    let prim = thrown_prim(&catch_body[1])?;
 
-        // 4. Drop the normal-path sibling close.
-        let mut consumed_tail = 0;
-        if try_pos + 1 < stmts.len()
-            && matches!(
-                &stmts[try_pos + 1],
-                Statement::Expression(Expression::Invoke { target, args })
-                if *target == format!("{res}.close") && args.is_empty()
-            )
-        {
+    // One arm closes the resource, the other suppresses onto the primary.
+    let (res, cond_ok) = match (close_arm_target(then_body), close_arm_target(else_body)) {
+        (Some(res), _) if suppresses_on_prim(else_body, &prim) => (res, true),
+        (_, Some(res)) if suppresses_on_prim(then_body, &prim) => (res, true),
+        _ => return None,
+    };
+    if res.is_empty() {
+        return None;
+    }
+    // The condition must test the resource against null.
+    if !cond_ok || !is_null_check(cond, &res) {
+        return None;
+    }
+
+    // Sibling: the guarded normal-path close `if (res !=/== null) { res.close(); }`.
+    let next = stmts.get(i + 1)?;
+    let Statement::If {
+        condition: sib_cond,
+        then_body: sib_then,
+        else_body: None,
+    } = next
+    else {
+        return None;
+    };
+    let sib_ok = sib_then.len() == 1 && close_arm_target(sib_then).as_deref() == Some(res.as_str());
+    if sib_ok && is_null_check(sib_cond, &res) {
+        Some(res)
+    } else {
+        None
+    }
+}
+
+/// Hoist a matched TWR resource into the `try (...)` header:
+/// move the declaration, clear the synthetic handler, drop the
+/// normal-path sibling close (bare or null-guarded), and pull a trailing
+/// return of the try's value temp inside. Returns the next index, or
+/// `None` with state restored when the declaration doesn't cooperate.
+fn hoist_twr_resource(stmts: &mut Vec<Statement>, i: usize, res: &str) -> Option<usize> {
+    let dp = find_resource_decl(stmts, i, res)?;
+    let try_pos = dp + 1;
+    let resource = match std::mem::replace(&mut stmts[dp], Statement::Unknown(String::new())) {
+        Statement::VarDecl {
+            target,
+            var_type,
+            value: Some(value),
+        } if target == res => Statement::VarDecl {
+            target,
+            var_type,
+            value: Some(value),
+        },
+        Statement::Assign { target, value } if target == res => Statement::VarDecl {
+            target,
+            var_type: None,
+            value: Some(value),
+        },
+        other => {
+            stmts[dp] = other;
+            return None;
+        }
+    };
+    // The slot that held the declaration is gone from the statement
+    // stream; shift the list so no empty placeholder renders.
+    stmts.remove(dp);
+    let try_pos = try_pos - 1;
+
+    // 3. Empty the synthetic handler and lift the declaration.
+    let mut tc = std::mem::replace(&mut stmts[try_pos], Statement::Unknown(String::new()));
+    let Statement::TryCatch {
+        try_body: ref mut try_body_slot,
+        catch_body: ref mut catch_body_slot,
+        resources: ref mut resources_slot,
+        ..
+    } = tc
+    else {
+        unreachable!()
+    };
+    catch_body_slot.clear();
+    resources_slot.push(resource);
+
+    // 4. Drop the normal-path sibling close: bare `res.close();` or the
+    //    null-guarded `if (res != null) { res.close(); }`.
+    let mut consumed_tail = 0;
+    if try_pos + 1 < stmts.len() {
+        let sibling_close = matches!(
+            &stmts[try_pos + 1],
+            Statement::Expression(Expression::Invoke { target, args })
+            if *target == format!("{res}.close") && args.is_empty()
+        ) || matches!(
+            &stmts[try_pos + 1],
+            Statement::If {
+                then_body,
+                else_body: None,
+                ..
+            } if then_body.len() == 1
+                && matches!(
+                    &then_body[0],
+                    Statement::Expression(Expression::Invoke { target, args })
+                    if *target == format!("{res}.close") && args.is_empty()
+                )
+        );
+        if sibling_close {
             stmts.remove(try_pos + 1);
             consumed_tail += 1;
         }
+    }
 
-        // 5. A trailing return of a variable declared at the end of the try
-        //    body belongs inside the try (javac hoists it past close).
-        let last_decl = match try_body_slot.last() {
+    // 5. A trailing return of a variable declared at the end of the try
+    //    body belongs inside the try (javac hoists it past close).
+    let last_decl = match try_body_slot.last() {
+        Some(Statement::VarDecl { target, .. }) => Some(target.clone()),
+        Some(Statement::Assign { target, .. }) => Some(target.clone()),
+        _ => None,
+    };
+    if let Some(declared) = last_decl
+        && try_pos + 1 < stmts.len()
+    {
+        let moves_in = match &stmts[try_pos + 1] {
+            Statement::Return(Some(value)) => {
+                let rendered = format!("{value:?}");
+                rendered.contains(&declared)
+            }
+            _ => false,
+        };
+        if moves_in {
+            let ret = stmts.remove(try_pos + 1);
+            try_body_slot.push(ret);
+            consumed_tail += 1;
+        }
+    }
+    // tc was taken out of the list; write the mutated node back.
+    stmts[try_pos] = tc;
+    Some(try_pos + 1 + consumed_tail)
+}
+
+/// Fold the restructured-handler TWR shape, where wrapping never produced
+/// a TryCatch node (the handler was already structured into if/else before
+/// wrapping could claim it):
+///
+/// ```java
+/// res-decl; ...body...;
+/// if (res == null) {
+///     if (res == null) { prim.addSuppressed(x); } else { res.close(); }
+///     throw prim;
+/// } else {
+///     res.close();
+/// }
+/// ```
+///
+/// Arm polarity may vary; what matters is the nested suppression/close
+/// pair plus the terminal rethrow. The statements between the declaration
+/// and the guard become the try body. Returns the next index.
+fn fold_structured_handler_close(stmts: &mut Vec<Statement>, i: usize) -> Option<usize> {
+    let (cond, then_body, else_body) = match &stmts[i] {
+        Statement::If {
+            condition,
+            then_body,
+            else_body: Some(else_body),
+        } => (condition, then_body, else_body),
+        _ => return None,
+    };
+    // Outer arms in either order: handler arm (nested if + terminal throw)
+    // vs plain close arm.
+    let (handler_arm, res) = match (close_arm_target(then_body), close_arm_target(else_body)) {
+        (None, Some(res)) => (then_body, res),
+        (Some(res), None) => (else_body, res),
+        _ => return None,
+    };
+    if res.is_empty() || !is_null_check(cond, &res) {
+        return None;
+    }
+    // Handler arm: a nested null-guarded suppression/close if plus the
+    // terminal `throw prim;`, where the suppression lands on the thrown
+    // primary.
+    let throw_stmt = handler_arm.last()?;
+    let prim = thrown_prim(throw_stmt)?;
+    let mut nested_ok = false;
+    for nested in &handler_arm[..handler_arm.len().saturating_sub(1)] {
+        if let Statement::If {
+            condition,
+            then_body,
+            else_body: Some(else_body),
+        } = nested
+            && is_null_check(condition, &res)
+        {
+            let a_close = close_arm_target(then_body);
+            let b_close = close_arm_target(else_body);
+            if (a_close.as_deref() == Some(res.as_str()) && suppresses_on_prim(else_body, &prim))
+                || (b_close.as_deref() == Some(res.as_str())
+                    && suppresses_on_prim(then_body, &prim))
+            {
+                nested_ok = true;
+                break;
+            }
+        }
+    }
+    if !nested_ok {
+        return None;
+    }
+
+    // Resource declaration + straight-line try body between it and the guard.
+    // Divergent statements (return/throw) in between mean this is not the
+    // straight-line compiler shape — leave it alone.
+    let dp = find_tw_resource_decl(stmts, i, &res)?;
+    let body_ok = !stmts[dp + 1..i].is_empty()
+        && !stmts[dp + 1..i]
+            .iter()
+            .any(|s| matches!(s, Statement::Return(_)) || thrown_prim(s).is_some());
+    if !body_ok {
+        return None;
+    }
+    let resource = match std::mem::replace(&mut stmts[dp], Statement::Unknown(String::new())) {
+        Statement::VarDecl {
+            target,
+            var_type,
+            value: Some(value),
+        } if target == res => Statement::VarDecl {
+            target,
+            var_type,
+            value: Some(value),
+        },
+        Statement::Assign { target, value } if target == res => Statement::VarDecl {
+            target,
+            var_type: None,
+            value: Some(value),
+        },
+        other => {
+            stmts[dp] = other;
+            return None;
+        }
+    };
+    stmts.remove(dp);
+    // After removing the decl the guard sits at i - 1, body is dp..i - 1.
+    let body: Vec<Statement> = stmts.drain(dp..i - 1).collect();
+    let node_pos = dp;
+    stmts[node_pos] = Statement::TryCatch {
+        try_body: body,
+        catch_type: "Throwable".to_string(),
+        catch_var: "e".to_string(),
+        catch_body: Vec::new(),
+        resources: vec![resource],
+        finally_body: None,
+    };
+
+    // Pull a trailing return of the try's value temp inside (same as the
+    // shared hoist: javac hoists it past close).
+    let mut consumed_tail = 0;
+    let last_decl = match stmts[node_pos] {
+        Statement::TryCatch { ref try_body, .. } => match try_body.last() {
             Some(Statement::VarDecl { target, .. }) => Some(target.clone()),
             Some(Statement::Assign { target, .. }) => Some(target.clone()),
             _ => None,
-        };
-        if let Some(declared) = last_decl
-            && try_pos + 1 < stmts.len()
-        {
-            let moves_in = match &stmts[try_pos + 1] {
-                Statement::Return(Some(value)) => {
-                    let rendered = format!("{value:?}");
-                    rendered.contains(&declared)
-                }
-                _ => false,
-            };
-            if moves_in {
-                let ret = stmts.remove(try_pos + 1);
-                try_body_slot.push(ret);
-                consumed_tail += 1;
+        },
+        _ => None,
+    };
+    if let Some(declared) = last_decl
+        && node_pos + 1 < stmts.len()
+    {
+        let moves_in = match &stmts[node_pos + 1] {
+            Statement::Return(Some(value)) => {
+                let rendered = format!("{value:?}");
+                rendered.contains(&declared)
             }
+            _ => false,
+        };
+        if moves_in {
+            let ret = stmts.remove(node_pos + 1);
+            if let Statement::TryCatch {
+                ref mut try_body, ..
+            } = stmts[node_pos]
+            {
+                try_body.push(ret);
+            }
+            consumed_tail += 1;
         }
-        // tc was taken out of the list; write the mutated node back.
-        stmts[try_pos] = tc;
-        i = try_pos + 1 + consumed_tail;
     }
+    Some(node_pos + 1 + consumed_tail)
 }
 
 fn finalize_try_shapes(stmts: &mut Vec<Statement>) {
@@ -7557,6 +7879,135 @@ mod tests {
             stmts,
             vec![Statement::Return(Some(Expression::ConstInt(2)))]
         );
+    }
+
+    #[test]
+    fn null_guarded_close_folds_into_twr_header() {
+        // javac null-guarded close shape: guarded close in the handler +
+        // guarded sibling close must fold into `try (res) { .. }`.
+        let close = || {
+            Statement::Expression(Expression::Invoke {
+                target: "out.close".to_string(),
+                args: vec![],
+            })
+        };
+        let mut stmts = vec![
+            Statement::VarDecl {
+                target: "out".to_string(),
+                var_type: None,
+                value: Some(Expression::Local("fresh".to_string())),
+            },
+            Statement::TryCatch {
+                try_body: vec![Statement::Assign {
+                    target: "v".to_string(),
+                    value: Expression::ConstInt(1),
+                }],
+                catch_type: "Throwable".to_string(),
+                catch_var: "e".to_string(),
+                catch_body: vec![
+                    Statement::If {
+                        condition: Expression::Binary {
+                            left: Box::new(Expression::Local("out".to_string())),
+                            op: BinaryOp::Eq,
+                            right: Box::new(Expression::ConstNull),
+                        },
+                        then_body: vec![Statement::Expression(Expression::Invoke {
+                            target: "prim.addSuppressed".to_string(),
+                            args: vec![Expression::Local("ce".to_string())],
+                        })],
+                        else_body: Some(vec![close()]),
+                    },
+                    Statement::Expression(Expression::Unknown("throw prim".to_string())),
+                ],
+                resources: vec![],
+                finally_body: None,
+            },
+            Statement::If {
+                condition: Expression::Binary {
+                    left: Box::new(Expression::Local("out".to_string())),
+                    op: BinaryOp::Ne,
+                    right: Box::new(Expression::ConstNull),
+                },
+                then_body: vec![close()],
+                else_body: None,
+            },
+            Statement::Return(Some(Expression::Local("v".to_string()))),
+        ];
+        fold_try_with_resources(&mut stmts);
+        assert_eq!(stmts.len(), 1, "leftover statements: {stmts:?}");
+        match &stmts[0] {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                resources,
+                ..
+            } => {
+                assert!(catch_body.is_empty(), "handler not cleared");
+                assert_eq!(resources.len(), 1, "resource not hoisted");
+                assert!(
+                    try_body.iter().any(|s| matches!(s, Statement::Return(_))),
+                    "trailing return not moved in: {try_body:?}"
+                );
+            }
+            other => panic!("expected TryCatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structured_handler_close_folds_into_twr_header() {
+        // Restructured-handler shape (copyToFile family): no TryCatch node,
+        // just decl + body + the doubled null-guard with suppression.
+        let close = || {
+            Statement::Expression(Expression::Invoke {
+                target: "out.close".to_string(),
+                args: vec![],
+            })
+        };
+        let null_check = || Expression::Binary {
+            left: Box::new(Expression::Local("out".to_string())),
+            op: BinaryOp::Eq,
+            right: Box::new(Expression::ConstNull),
+        };
+        let mut stmts = vec![
+            Statement::Assign {
+                target: "out".to_string(),
+                value: Expression::Local("fresh".to_string()),
+            },
+            Statement::Expression(Expression::Invoke {
+                target: "IOUtils.copy".to_string(),
+                args: vec![],
+            }),
+            Statement::If {
+                condition: null_check(),
+                then_body: vec![
+                    Statement::If {
+                        condition: null_check(),
+                        then_body: vec![Statement::Expression(Expression::Invoke {
+                            target: "prim.addSuppressed".to_string(),
+                            args: vec![Expression::Local("ce".to_string())],
+                        })],
+                        else_body: Some(vec![close()]),
+                    },
+                    Statement::Expression(Expression::Unknown("throw prim".to_string())),
+                ],
+                else_body: Some(vec![close()]),
+            },
+        ];
+        fold_try_with_resources(&mut stmts);
+        assert_eq!(stmts.len(), 1, "leftover statements: {stmts:?}");
+        match &stmts[0] {
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                resources,
+                ..
+            } => {
+                assert!(catch_body.is_empty(), "handler not cleared");
+                assert_eq!(resources.len(), 1, "resource not hoisted");
+                assert_eq!(try_body.len(), 1, "body wrong: {try_body:?}");
+            }
+            other => panic!("expected TryCatch, got {other:?}"),
+        }
     }
 
     #[test]
