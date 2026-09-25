@@ -67,7 +67,7 @@ cargo install --git https://github.com/oaniggggga/vinylite
 Input bytecode of a trivial loop with an if/else inside (from `javac`):
 
 ```java
-// Decompiled by Vinylite v0.2.5 (https://github.com/oaniggggga/vinylite)
+// Decompiled by Vinylite v0.3.0 (https://github.com/oaniggggga/vinylite)
 public class SimpleTest {
     public static void main(String[] arg0) {
         StringBuilder var_1 = new StringBuilder();
@@ -111,24 +111,24 @@ and JIT that Vinylite does not pay):
 
 | Jar | Classes | Vinylite | CFR 0.152 | Speedup |
 |---|---|---|---|---|
-| gson 2.11.0 | 224 | **0.20 s** | 1.48 s | 7.4x |
-| commons-lang3 3.14.0 | 404 | **0.46 s** | 3.16 s | 6.9x |
-| commons-io 2.15.1 | 339 | **0.31 s** | 2.41 s | 7.7x |
+| gson 2.11.0 | 224 | **0.20 s** | 1.59 s | 7.8x |
+| commons-lang3 3.14.0 | 404 | **0.53 s** | 3.75 s | 7.1x |
+| commons-io 2.15.1 | 339 | **0.32 s** | 2.39 s | 7.1x |
 
 Vinylite emits one `.java` per classfile including every nested/anonymous
 class; CFR inlines most anonymous classes into their parent and skips
 `module-info`, so file counts differ by design.
 
-Known output gaps vs CFR (measured on the same jars): null-guarded
-resource close with conditional `addSuppressed` (e.g. `copy(URL, File)`
-in commons-io) stays expanded instead of folding into `try (...)` —
-26 leftover suppression calls on commons-io vs CFR's 6 (3 vs 2 on
+Known output gaps vs CFR (measured on the same jars): guarded resource
+close with conditional `addSuppressed` outside the classic javac shapes
+stays expanded instead of folding into `try (...)` — 9 leftover
+suppression calls on commons-io vs CFR's 6 (3 vs 2 on
 commons-lang3); enum constant bodies with method overrides also render
 better in CFR. Speed and robustness (zero panics across
 the corpora, per-class panic isolation) are Vinylite's current strengths.
 Try/catch coverage on commons-lang3: 77 try + 7 try-with-resources
-blocks vs CFR's 89 + 10; multi-catch, finally and single-resource TWR
-shapes are reconstructed canonically.
+blocks vs CFR's 89 + 10 (on commons-io: 33 TWR vs 41); multi-catch,
+finally and single-resource TWR shapes are reconstructed canonically.
 boolean-as-int returns are re-typed from the declared return type
 (`return 0;` in `()Z` renders `return false;`, incl. ternary arms);
 boolean locals/args rely on usage heuristics.

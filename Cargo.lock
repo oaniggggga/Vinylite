@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "vinylite-cli"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "vinylite-core",
 ]
 
 [[package]]
 name = "vinylite-core"
-version = "0.2.5"
+version = "0.3.0"
