@@ -3,14 +3,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use vinylite_core::{
-    build_class_decl, decompile_class, deobfuscate_name, inspect_class, parse_jar,
+    Classpath, build_class_decl_with_classpath, decompile_class_with_classpath, deobfuscate_name,
+    inspect_class, parse_jar,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Platform path separator for `--classpath`, java-style.
+#[cfg(windows)]
+const CP_SEP: char = ';';
+#[cfg(not(windows))]
+const CP_SEP: char = ':';
+
 struct Args {
     input: PathBuf,
     output: Option<PathBuf>,
+    classpath: Vec<PathBuf>,
 }
 
 fn print_help() {
@@ -20,15 +28,19 @@ vinylite {VERSION}
 Recovery-first JVM classfile decompiler (zero dependencies)
 
 USAGE:
-    vinylite <INPUT> [-o <PATH>]
+    vinylite <INPUT> [-o <PATH>] [-p <PATH>...]
 
 ARGS:
     <INPUT>    .class file, .jar/.zip archive
 
 OPTIONS:
-    -o, --output <PATH>    Output file (.jar/.zip) or directory
-    -h, --help             Print this help
-    -V, --version          Print version"
+    -o, --output <PATH>       Output file (.jar/.zip) or directory
+    -p, --classpath <PATH>    Hierarchy lookup path (dirs/jars, java-style
+                              separators, repeatable) for @Override and future
+                              hierarchy-aware passes. The decompiled archive
+                              itself is always indexed too
+    -h, --help                Print this help
+    -V, --version             Print version"
     );
 }
 
@@ -36,6 +48,7 @@ fn parse_args() -> Option<Args> {
     let mut raw = std::env::args().skip(1).peekable();
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut classpath: Vec<PathBuf> = Vec::new();
 
     while let Some(arg) = raw.next() {
         match arg.as_str() {
@@ -54,6 +67,13 @@ fn parse_args() -> Option<Args> {
                 };
                 output = Some(PathBuf::from(val));
             }
+            "-p" | "--classpath" | "--class-path" => {
+                let Some(val) = raw.next() else {
+                    eprintln!("fatal: --classpath requires a PATH");
+                    std::process::exit(2);
+                };
+                classpath.extend(val.split(CP_SEP).map(PathBuf::from));
+            }
             s if s.starts_with('-') => {
                 eprintln!("fatal: unknown flag {s} (see --help)");
                 std::process::exit(2);
@@ -69,7 +89,11 @@ fn parse_args() -> Option<Args> {
     }
 
     match input {
-        Some(input) => Some(Args { input, output }),
+        Some(input) => Some(Args {
+            input,
+            output,
+            classpath,
+        }),
         None => {
             print_help();
             std::process::exit(2);
@@ -87,11 +111,28 @@ fn main() {
         }
     };
 
+    let mut classpath = Classpath::new();
+    for entry in &args.classpath {
+        if entry.is_dir() {
+            classpath.add_dir(entry.clone());
+        } else {
+            match fs::read(entry) {
+                Ok(jar_bytes) => classpath.add_archive_bytes(jar_bytes),
+                Err(error) => {
+                    eprintln!(
+                        "warning: cannot read --classpath entry {}: {error}",
+                        entry.display()
+                    );
+                }
+            }
+        }
+    }
+
     let input_str = args.input.display().to_string();
     if input_str.ends_with(".jar") || input_str.ends_with(".zip") {
-        process_jar(&bytes, &args.output, &args.input);
+        process_jar(&bytes, &args.output, &args.input, &mut classpath);
     } else {
-        process_class(&bytes, &args.output);
+        process_class(&bytes, &args.output, &mut classpath);
     }
 }
 
@@ -113,10 +154,10 @@ fn print_diagnostics(diagnostics: &[vinylite_core::Diagnostic]) {
     }
 }
 
-fn process_class(bytes: &[u8], output: &Option<PathBuf>) {
+fn process_class(bytes: &[u8], output: &Option<PathBuf>, classpath: &mut Classpath) {
     let report = inspect_class(bytes);
     let source = if let Some(class) = &report.class {
-        let class_decl = build_class_decl(class);
+        let class_decl = build_class_decl_with_classpath(class, Some(classpath));
         class_decl.render()
     } else {
         "// class: unrecoverable\n".to_string()
@@ -137,8 +178,16 @@ fn process_class(bytes: &[u8], output: &Option<PathBuf>) {
     }
 }
 
-fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
+fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path, classpath: &mut Classpath) {
     let entries = parse_jar(bytes);
+
+    // The archive being decompiled doubles as its own classpath, so
+    // same-jar supertypes resolve with no extra flags.
+    for entry in &entries {
+        if let Some(class_bytes) = &entry.class_bytes {
+            classpath.add_memory_class(entry.name.clone(), class_bytes.clone());
+        }
+    }
 
     // Recovery-first at the JAR level too: one poisoned class must not take
     // down the whole archive. A panicking decompile degrades to a stub and
@@ -147,17 +196,19 @@ fn process_jar(bytes: &[u8], output: &Option<PathBuf>, input: &Path) {
     let mut failed_classes: usize = 0;
     for entry in &entries {
         if let Some(class_bytes) = &entry.class_bytes {
-            let source =
-                std::panic::catch_unwind(|| decompile_class(class_bytes)).unwrap_or_else(|panic| {
-                    failed_classes += 1;
-                    let detail = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| (*s).to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown panic".to_string());
-                    eprintln!("warning: panicked on {}: {detail}", entry.name);
-                    "// unrecoverable: decompiler panicked on this class\n".to_string()
-                });
+            let source = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decompile_class_with_classpath(class_bytes, &mut *classpath)
+            }))
+            .unwrap_or_else(|panic| {
+                failed_classes += 1;
+                let detail = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                eprintln!("warning: panicked on {}: {detail}", entry.name);
+                "// unrecoverable: decompiler panicked on this class\n".to_string()
+            });
             let internal_name = entry.name.replace(".class", "");
             class_sources.insert(internal_name, source.trim_end().to_string());
         }

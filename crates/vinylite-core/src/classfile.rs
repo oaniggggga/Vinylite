@@ -18,6 +18,8 @@ pub struct ClassFile {
     pub signature: Option<String>,
     pub annotations: Vec<Annotation>,
     pub deprecated: bool,
+    /// Direct superinterfaces in internal (`java/lang/Comparable`) form.
+    pub interfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -390,11 +392,12 @@ impl<'a> ClassFileParser<'a> {
         let class_access_flags = self.read_u16_fatal("access flags")?;
         let this_class = self.read_u16_fatal("this class")?;
         let super_class = self.read_u16_fatal("super class")?;
-        self.skip_table("interfaces")?;
+        let interface_indices = self.parse_interfaces()?;
         let fields = self.parse_fields(&constant_pool)?;
         let methods = self.parse_methods(&constant_pool)?;
         let (inner_classes, bootstrap_methods, signature, annotations, attr_deprecated) =
             self.parse_class_attributes(&constant_pool);
+        let interfaces = resolve_interface_names(&constant_pool, &interface_indices);
 
         Ok(ClassFile {
             minor_version,
@@ -409,6 +412,7 @@ impl<'a> ClassFileParser<'a> {
             signature,
             annotations,
             deprecated: attr_deprecated || class_access_flags & 0x2000 != 0,
+            interfaces,
         })
     }
 
@@ -1182,9 +1186,14 @@ impl<'a> ClassFileParser<'a> {
         Ok(())
     }
 
-    fn skip_table(&mut self, label: &str) -> Result<(), ParseError> {
-        let count = self.read_u16_fatal(format!("{label} count"))?;
-        self.skip_bytes(count as usize * 2, label)
+    /// Interface indices of this class (constant-pool class entries).
+    fn parse_interfaces(&mut self) -> Result<Vec<u16>, ParseError> {
+        let count = self.read_u16_fatal("interfaces count")? as usize;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            out.push(self.read_u16_fatal("interface index")?);
+        }
+        Ok(out)
     }
 
     fn fill_missing_constant_pool(
@@ -1424,9 +1433,25 @@ fn cp_utf8(constant_pool: &[Recoverable<ConstantPoolEntry>], index: u16) -> Opti
     }
 }
 
-/// Map an annotation type/class descriptor to dotted form:
-/// `Ljava/lang/Deprecated;` → `java.lang.Deprecated`,
-/// `[Ljava/lang/String;` → `java.lang.String[]`.
+/// Resolve direct superinterface names from constant-pool class indices;
+/// unresolvable entries are skipped (recovery-first).
+fn resolve_interface_names(
+    pool: &[Recoverable<ConstantPoolEntry>],
+    indices: &[u16],
+) -> Vec<String> {
+    indices
+        .iter()
+        .filter_map(|index| match pool.get(*index as usize) {
+            Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) => {
+                cp_utf8(pool, *name_index)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Map a field descriptor to dotted form: `Ljava/lang/Deprecated;` becomes
+/// `java.lang.Deprecated`, `[Ljava/lang/String;` becomes `java.lang.String[]`.
 fn field_descriptor_to_dotted(descriptor: &str) -> String {
     let raw = descriptor.trim();
     let dims = raw.bytes().take_while(|&b| b == b'[').count();

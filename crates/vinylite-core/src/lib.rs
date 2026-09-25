@@ -2,6 +2,7 @@ pub mod ast;
 pub mod bytecode;
 pub mod cfg;
 pub mod classfile;
+pub mod classpath;
 pub mod descriptor;
 pub mod diagnostic;
 pub mod generics;
@@ -17,6 +18,7 @@ pub use classfile::{
     BootstrapMethodInfo, ClassFile, ClassFileParser, ConstantPoolEntry, StackMapFrame,
     VerificationType,
 };
+pub use classpath::Classpath;
 pub use descriptor::parse_descriptor;
 pub use diagnostic::{Diagnostic, Severity};
 pub use jar::{JarEntry, deobfuscate_name, parse_jar};
@@ -57,14 +59,30 @@ pub fn decompile_class(bytes: &[u8]) -> String {
     }
 }
 
+/// Like [`decompile_class`], but hierarchy queries (currently `@Override`
+/// beyond `java.lang.Object`) resolve against `classpath`, which should
+/// contain the archive being decompiled plus any `--classpath` entries.
+pub fn decompile_class_with_classpath(bytes: &[u8], classpath: &mut Classpath) -> String {
+    let report = inspect_class(bytes);
+    match &report.class {
+        Some(class) => {
+            let class_decl = build_class_decl_with_classpath(class, Some(classpath));
+            class_decl.render()
+        }
+        None => "// class unrecoverable\n".to_string(),
+    }
+}
+
 /// Short-rendered annotation strings for a method: bytecode annotations
-/// first, then `@Deprecated` (flag or attribute), then `@Override` for the
-/// five `java.lang.Object` methods (provable without a class hierarchy).
+/// first, then `@Deprecated` (flag or attribute), then `@Override` — for the
+/// five `java.lang.Object` methods (provable without a hierarchy) or any
+/// method the `classpath` hierarchy confirms as an override.
 fn rendered_method_annotations(
     method: &crate::classfile::MethodInfo,
     method_name: &str,
     descriptor: &str,
     class_internal_name: &str,
+    classpath: Option<&mut Classpath>,
 ) -> Vec<String> {
     let mut out: Vec<String> = method
         .annotations
@@ -79,12 +97,22 @@ fn rendered_method_annotations(
     {
         out.push("Deprecated".to_string());
     }
-    if is_object_override(
-        method_name,
-        descriptor,
-        method.access_flags,
-        class_internal_name,
-    ) && !out.iter().any(|a| a == "Override")
+    let hierarchy_override = classpath.is_some_and(|cp| {
+        cp.is_override(
+            class_internal_name,
+            method_name,
+            descriptor,
+            method.access_flags,
+        )
+    });
+    if (hierarchy_override
+        || is_object_override(
+            method_name,
+            descriptor,
+            method.access_flags,
+            class_internal_name,
+        ))
+        && !out.iter().any(|a| a == "Override")
     {
         out.push("Override".to_string());
     }
@@ -131,6 +159,13 @@ fn rendered_member_annotations(
 }
 
 pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
+    build_class_decl_with_classpath(class, None)
+}
+
+pub fn build_class_decl_with_classpath(
+    class: &ClassFile,
+    mut classpath: Option<&mut Classpath>,
+) -> ClassDecl {
     let class_name = get_class_name(class).unwrap_or_else(|| "Unknown".to_string());
     let dot_name = internal_name_to_dot(&class_name);
 
@@ -265,6 +300,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                     &method_name,
                     &descriptor,
                     &class_name,
+                    classpath.as_deref_mut(),
                 ),
             }
         };
@@ -279,6 +315,7 @@ pub fn build_class_decl(class: &ClassFile) -> ClassDecl {
                 &get_method_name(class, method),
                 &descriptor,
                 &class_name,
+                classpath.as_deref_mut(),
             );
         }
         all_method_decls.push(method_decl);

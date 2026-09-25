@@ -36,7 +36,10 @@ obfuscated, and partially corrupted classfiles instead of giving up on them.
   modifiers; bridge/synthetic methods hidden like CFR/Vineflower do;
 - annotations: `RuntimeVisible/InvisibleAnnotations` rendered
   (`@Deprecated`, `@FunctionalInterface`, `@SerializedName`-style custom
-  ones with imports), `@Override` on `java.lang.Object` methods;
+  ones with imports), `@Override` via hierarchy: the decompiled archive
+  is indexed automatically, plus java-style `-p/--classpath` for dirs
+  and jars (commons-lang3: 373 `@Override` vs CFR's 505; the rest needs
+  JDK supertypes, which the runtime-module format doesn't expose);
 - dead-code tolerance: unreachable traps are stack-sandboxed (never
   corrupt live values), dead noise pruned, informative dead code kept;
 - `LineNumberTable` parsing (statement ordering / diagnostics groundwork);
@@ -92,6 +95,7 @@ A stable Rust toolchain is enough (no C compiler, no external crates).
 cargo test --workspace
 cargo run -p vinylite-cli -- path\to\Example.class
 cargo run -p vinylite-cli -- app.jar -o out/
+cargo run -p vinylite-cli -- app.jar -o out/ -p "lib\dep1.jar;lib\dep2.jar"
 cargo run -p vinylite-cli -- --help
 ```
 
@@ -124,8 +128,7 @@ better in CFR. Speed and robustness (zero panics across
 the corpora, per-class panic isolation) are Vinylite's current strengths.
 Try/catch coverage on commons-lang3: 77 try + 7 try-with-resources
 blocks vs CFR's 89 + 10; multi-catch, finally and single-resource TWR
-shapes are reconstructed canonically. `@Override` beyond
-`java.lang.Object` methods needs hierarchy resolution and is not emitted;
+shapes are reconstructed canonically.
 boolean-as-int returns (`? 1 : 0`) are only partially re-typed.
 
 ## Development

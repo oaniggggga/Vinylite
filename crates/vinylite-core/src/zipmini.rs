@@ -192,25 +192,36 @@ pub fn extract_class_files(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
         if !entry.name.ends_with(".class") {
             continue;
         }
-        // Encrypted entries are skipped, never fatal.
-        if entry.flags & 0x01 != 0 {
-            continue;
+        if let Some(decoded) = decode_entry(bytes, &entry) {
+            out.push((entry.name, decoded));
         }
-        let Some((start, len)) = local_data_range(bytes, &entry) else {
-            continue;
-        };
-        let raw = &bytes[start..start + len];
-        let decoded = match entry.method {
-            0 => raw.to_vec(),
-            8 => match inflate(raw, entry.uncomp_size as usize) {
-                Some(v) => v,
-                None => continue,
-            },
-            _ => continue,
-        };
-        out.push((entry.name, decoded));
     }
     out
+}
+
+/// Find one `.class` entry by archive path (`com/foo/Bar.class`) and
+/// extract it without decompressing the rest of the archive.
+/// Used for on-demand classpath lookups.
+pub fn find_class_bytes(archive: &[u8], internal_path: &str) -> Option<Vec<u8>> {
+    let want = internal_path.replace('\\', "/");
+    parse_central_directory(archive)
+        .into_iter()
+        .find(|entry| entry.name == want)
+        .and_then(|entry| decode_entry(archive, &entry))
+}
+
+fn decode_entry(bytes: &[u8], entry: &CentralEntry) -> Option<Vec<u8>> {
+    // Encrypted entries are skipped, never fatal.
+    if entry.flags & 0x01 != 0 {
+        return None;
+    }
+    let (start, len) = local_data_range(bytes, entry)?;
+    let raw = bytes.get(start..start + len)?;
+    match entry.method {
+        0 => Some(raw.to_vec()),
+        8 => inflate(raw, entry.uncomp_size as usize),
+        _ => None,
+    }
 }
 
 /// Entry-name de-duplication helper shared by the CLI writer.
