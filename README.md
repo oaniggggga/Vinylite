@@ -129,7 +129,9 @@ the corpora, per-class panic isolation) are Vinylite's current strengths.
 Try/catch coverage on commons-lang3: 77 try + 7 try-with-resources
 blocks vs CFR's 89 + 10; multi-catch, finally and single-resource TWR
 shapes are reconstructed canonically.
-boolean-as-int returns (`? 1 : 0`) are only partially re-typed.
+boolean-as-int returns are re-typed from the declared return type
+(`return 0;` in `()Z` renders `return false;`, incl. ternary arms);
+boolean locals/args rely on usage heuristics.
 
 ## Development
 

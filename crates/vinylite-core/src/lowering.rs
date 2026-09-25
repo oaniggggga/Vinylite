@@ -1503,6 +1503,78 @@ fn coerce_bool_literal_in_place(arg: &mut Expression) {
     }
 }
 
+/// True when a raw method descriptor declares a boolean return (`()Z` and
+/// friends). Malformed descriptors simply don't match.
+fn method_returns_boolean(method_descriptor: &str) -> bool {
+    method_descriptor.split(')').nth(1) == Some("Z")
+}
+
+/// Rewrite `return 0;`/`return 1;` to `return false;`/`return true;` in a
+/// boolean-returning method, descending into ternary arms (`c ? 0 : 1`).
+/// Anything else (arithmetic, calls, lambda bodies) is left alone:
+/// only literals in return position have a provable mapping.
+fn coerce_bool_return_expr(expr: &mut Expression) {
+    match expr {
+        Expression::ConstInt(0) => *expr = Expression::Unknown("false".to_string()),
+        Expression::ConstInt(1) => *expr = Expression::Unknown("true".to_string()),
+        Expression::Ternary {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            coerce_bool_return_expr(then_expr);
+            coerce_bool_return_expr(else_expr);
+        }
+        _ => {}
+    }
+}
+
+fn coerce_boolean_returns(stmts: &mut [Statement]) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::Return(Some(value)) => coerce_bool_return_expr(value),
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                coerce_boolean_returns(then_body);
+                if let Some(eb) = else_body {
+                    coerce_boolean_returns(eb);
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::Synchronized { body, .. }
+            | Statement::ForEach { body, .. } => coerce_boolean_returns(body),
+            Statement::For {
+                init, update, body, ..
+            } => {
+                coerce_boolean_returns(init);
+                coerce_boolean_returns(update);
+                coerce_boolean_returns(body);
+            }
+            Statement::Switch { arms, .. } => {
+                for arm in arms {
+                    coerce_boolean_returns(&mut arm.body);
+                }
+            }
+            Statement::TryCatch {
+                try_body,
+                catch_body,
+                finally_body,
+                ..
+            } => {
+                coerce_boolean_returns(try_body);
+                coerce_boolean_returns(catch_body);
+                if let Some(fin) = finally_body {
+                    coerce_boolean_returns(fin);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Fold pre-indy string concatenation: `new StringBuilder().append(a)`
 /// accumulates into `Concat`, and a terminating `.toString()` folds the
 /// parts into an `a + b` chain. Returns `None` for anything else (normal
@@ -5627,6 +5699,14 @@ pub fn lower_method_to_ast(
     // Attribute inferred types (descriptor/LVT/StackMap) and boolean usage.
     apply_inferred_types(&mut statements, &type_env, &slot_names);
 
+    // Protectors stub method bodies with raw int constants (`iconst_0;
+    // ireturn` in a ()Z method verifies on JVM but is not valid Java).
+    // Coerce 0/1 return literals — including ternary arms — to false/true
+    // when the declared return type is boolean.
+    if method_returns_boolean(method_descriptor) {
+        coerce_boolean_returns(&mut statements);
+    }
+
     // Remove trailing void return
     if let Some(Statement::Return(None)) = statements.last() {
         statements.pop();
@@ -7272,6 +7352,49 @@ mod tests {
                 op: BinaryOp::Ne,
                 right: Box::new(Expression::Local("b".to_string())),
             }
+        );
+    }
+
+    #[test]
+    fn boolean_returns_coerce_int_literals_in_boolean_methods() {
+        // Protector-stubbed bodies (`iconst_0; ireturn` in ()Z) must render
+        // as false/true, including inside ternary arms. Other return types
+        // are untouched.
+        assert!(method_returns_boolean("()Z"));
+        assert!(!method_returns_boolean("()V"));
+        assert!(!method_returns_boolean("(I)I"));
+        assert!(!method_returns_boolean("garbage"));
+
+        let mut stmts = vec![
+            Statement::Return(Some(Expression::ConstInt(0))),
+            Statement::If {
+                condition: Expression::Local("c".to_string()),
+                then_body: vec![Statement::Return(Some(Expression::ConstInt(1)))],
+                else_body: Some(vec![Statement::Return(Some(Expression::ConstInt(0)))]),
+            },
+        ];
+        // Pre-fold to the ternary shape the pipeline would produce, then coerce.
+        reconstruct_ternaries_recursive(&mut stmts);
+        coerce_boolean_returns(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![
+                Statement::Return(Some(Expression::Unknown("false".to_string()))),
+                Statement::Return(Some(Expression::Ternary {
+                    condition: Box::new(Expression::Local("c".to_string())),
+                    then_expr: Box::new(Expression::Unknown("true".to_string())),
+                    else_expr: Box::new(Expression::Unknown("false".to_string())),
+                })),
+            ],
+        );
+
+        // Only 0/1 map: other literals survive even in boolean methods
+        // (invalid input stays visible instead of being mis-rewritten).
+        let mut stmts = vec![Statement::Return(Some(Expression::ConstInt(2)))];
+        coerce_boolean_returns(&mut stmts);
+        assert_eq!(
+            stmts,
+            vec![Statement::Return(Some(Expression::ConstInt(2)))]
         );
     }
 

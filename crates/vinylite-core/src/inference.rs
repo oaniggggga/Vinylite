@@ -207,10 +207,12 @@ pub fn infer_types(
         initial_locals[0] = JavaType::Unknown; // will be refined by stack map
     }
 
-    // Seed from local variable metadata (name/debug info takes precedence for names)
+    // Seed from local variable metadata (name/debug info takes precedence for names).
+    // Corrupt input can reference slots past max_locals — ignore those.
     for (&idx, m_vec) in &local_meta {
         if let Some(m) = m_vec.first()
             && let Some(ref ty) = m.ty
+            && (idx as usize) < max_locals
         {
             initial_locals[idx as usize] = ty.clone();
         }
