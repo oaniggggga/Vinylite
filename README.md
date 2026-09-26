@@ -154,6 +154,14 @@ Measured where recovery-first matters, not just on clean libraries:
   (no silent overwrites), 0 panics, `synchronized` 7 vs 10,
   `@Override` 205 vs 284 (the rest needs JDK supertypes on the
   classpath).
+- **Recompilability** (whole-output `javac`, errors): commons-lang3
+  **4** vs CFR's 198; commons-io **2** vs 110; gson 1886 vs 16 —
+  gson is dominated by unrendered class type parameters (`class
+  TypeAdapter` instead of `class TypeAdapter<T>`), the next feature
+  on the roadmap. Methodology note: `module-info.class` is skipped
+  (like CFR) because even a broken `module-info.java` in the set
+  makes javac bail out early and under-report errors by ~100x —
+  earlier gson figures measured with it present are retracted.
 
 ## Development
 
