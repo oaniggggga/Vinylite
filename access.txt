@@ -1,0 +1,4 @@
+access_flags: 2100
+is_interface: False
+is_annotation: True
+is_enum: False

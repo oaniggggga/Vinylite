@@ -205,7 +205,11 @@ pub struct ClassDecl {
     pub methods: Vec<MethodDecl>,
     pub access_flags: u16,
     pub super_name: Option<String>,
+    pub interfaces: Vec<String>,
+    pub type_params: String,
     pub is_enum: bool,
+    pub is_interface: bool,
+    pub is_annotation: bool,
     pub enum_constants: Vec<String>,
     /// Short-rendered annotations, e.g. `Deprecated`, `FunctionalInterface`.
     pub annotations: Vec<String>,
@@ -250,15 +254,34 @@ impl ClassDecl {
                 }
             }
         } else {
-            body.push_str("public class ");
-            body.push_str(&self.name);
+            let mut header = String::new();
+            if self.is_annotation {
+                header.push_str("@interface ");
+            } else if self.is_interface {
+                header.push_str("interface ");
+            } else {
+                header.push_str("public class ");
+            }
+            header.push_str(&self.name);
+            if !self.type_params.is_empty() {
+                header.push_str(&self.type_params);
+            }
             if let Some(super_name) = &self.super_name
                 && super_name.split('<').next().unwrap_or(super_name) != "java.lang.Object"
             {
-                body.push_str(" extends ");
-                body.push_str(&short_type(super_name));
+                header.push_str(" extends ");
+                header.push_str(&short_type(super_name));
             }
-            body.push_str(" {\n");
+            if !self.interfaces.is_empty() {
+                header.push_str(if self.is_interface {
+                    " extends "
+                } else {
+                    " implements "
+                });
+                header.push_str(&self.interfaces.join(", "));
+            }
+            header.push_str(" {\n");
+            body.push_str(&header);
         }
 
         // Render fields
@@ -1085,7 +1108,11 @@ mod tests {
             methods: vec![],
             access_flags: 0x0001,
             super_name: None,
+            interfaces: vec![],
+            type_params: String::new(),
             is_enum: false,
+            is_interface: false,
+            is_annotation: false,
             enum_constants: vec![],
             annotations: vec![],
         };
@@ -1120,7 +1147,11 @@ mod tests {
             methods: vec![method],
             access_flags: 0x0001,
             super_name: None,
+            interfaces: vec![],
+            type_params: String::new(),
             is_enum: false,
+            is_interface: false,
+            is_annotation: false,
             enum_constants: vec![],
             annotations: vec![],
         }
@@ -1206,7 +1237,11 @@ mod tests {
             }],
             access_flags: 0x0001,
             super_name: Some("java.lang.Object".to_string()),
+            interfaces: vec![],
+            type_params: String::new(),
             is_enum: false,
+            is_interface: false,
+            is_annotation: false,
             enum_constants: vec![],
             annotations: vec![],
         };
@@ -1236,7 +1271,11 @@ mod tests {
             methods: vec![],
             access_flags: 0x0001,
             super_name: Some("java.lang.Enum<com.example.Repo>".to_string()),
+            interfaces: vec![],
+            type_params: String::new(),
             is_enum: false,
+            is_interface: false,
+            is_annotation: false,
             enum_constants: vec![],
             annotations: vec![],
         };
@@ -1288,7 +1327,11 @@ mod tests {
             }],
             access_flags: 0x0001,
             super_name: None,
+            interfaces: vec![],
+            type_params: String::new(),
             is_enum: false,
+            is_interface: false,
+            is_annotation: false,
             enum_constants: vec![],
             annotations: vec![],
         };

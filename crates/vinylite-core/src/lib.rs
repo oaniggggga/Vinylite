@@ -178,12 +178,29 @@ pub fn build_class_decl_with_classpath(
         None => (None, dot_name),
     };
 
-    // Resolve super class (prefer generic Signature, e.g. `Enum<Xenon>`)
-    let super_name = generics::generic_super_name(
-        get_class_name_from_pool(&class.constant_pool, class.super_class)
-            .map(|s| internal_name_to_dot(&s)),
-        class.signature.as_deref(),
-    );
+    // Resolve super class and interfaces using generic Signature when available
+    let (type_params, super_name, interfaces) = if let Some(sig) = class.signature.as_deref()
+        && let Some(parsed) = generics::parse_class_signature(sig)
+    {
+        let (tp, sup, ifaces) = generics::format_class_sig(&parsed);
+        let ifaces_dotted: Vec<String> = ifaces.iter().map(|i| internal_name_to_dot(i)).collect();
+        (tp, Some(sup), ifaces_dotted)
+    } else {
+        let sup = generics::generic_super_name(
+            get_class_name_from_pool(&class.constant_pool, class.super_class)
+                .map(|s| internal_name_to_dot(&s)),
+            class.signature.as_deref(),
+        );
+        let ifaces_dotted: Vec<String> = class
+            .interfaces
+            .iter()
+            .map(|i| internal_name_to_dot(i))
+            .collect();
+        (String::new(), sup, ifaces_dotted)
+    };
+
+    let is_interface = class.access_flags & 0x0200 != 0;
+    let is_annotation = is_interface && class.access_flags & 0x2000 != 0;
 
     // Collect referenced classes for imports
     let imports = collect_imports(class, &class_name);
@@ -257,10 +274,56 @@ pub fn build_class_decl_with_classpath(
         }
     }
 
-    // Pass 2: lower all non-lambda methods with lambda bodies available
+    // Pass 2a: lower <clinit> first to extract static field initializers
+    let mut static_inits = std::collections::HashMap::new();
     for method in &class.methods {
         let method_name = get_method_name(class, method);
-        if method_name.starts_with("lambda$") {
+        if method_name != "<clinit>" {
+            continue;
+        }
+        let descriptor = get_utf8_from_pool(&class.constant_pool, method.descriptor_index)
+            .unwrap_or_else(|| "()V".to_string());
+
+        let mut clinit_decl = if let Some(code) = &method.code {
+            lowering::lower_method_to_ast(
+                &class.constant_pool,
+                &method_name,
+                &descriptor,
+                method.signature.as_deref(),
+                code,
+                &class_name,
+                method.access_flags,
+                &class.bootstrap_methods,
+                &lambda_bodies,
+                &known_fields,
+            )
+        } else {
+            MethodDecl {
+                name: method_name.clone(),
+                statements: vec![],
+                access_flags: method.access_flags,
+                return_type: "void".to_string(),
+                param_types: vec![],
+                param_names: vec![],
+                class_name: simple_name.clone(),
+                annotations: Vec::new(),
+            }
+        };
+
+        // Extract static field initializers from <clinit> statements
+        for stmt in &clinit_decl.statements {
+            if let Statement::Assign { target, value } = stmt {
+                static_inits.insert(target.clone(), value.clone());
+            }
+        }
+        // Clear the <clinit> body since initializers are now in field declarations
+        clinit_decl.statements.clear();
+    }
+
+    // Pass 2b: lower all other non-lambda methods with lambda bodies available
+    for method in &class.methods {
+        let method_name = get_method_name(class, method);
+        if method_name.starts_with("lambda$") || method_name == "<clinit>" {
             continue;
         }
         let descriptor = get_utf8_from_pool(&class.constant_pool, method.descriptor_index)
@@ -354,11 +417,12 @@ pub fn build_class_decl_with_classpath(
             let descriptor = get_utf8_from_pool(&class.constant_pool, f.descriptor_index)
                 .unwrap_or_else(|| "Ljava/lang/Object;".to_string());
             let field_type = generics::generic_field_type(&descriptor, f.signature.as_deref());
+            let initial_value = static_inits.get(&name).cloned();
             ast::FieldDecl {
                 name,
                 field_type,
                 access_flags: f.access_flags,
-                initial_value: None,
+                initial_value,
                 annotations: rendered_member_annotations(&f.annotations, f.deprecated),
             }
         })
@@ -372,7 +436,11 @@ pub fn build_class_decl_with_classpath(
         methods,
         access_flags: 0,
         super_name,
+        interfaces,
+        type_params,
         is_enum,
+        is_interface,
+        is_annotation,
         enum_constants,
         annotations: rendered_member_annotations(&class.annotations, class.deprecated),
     }
@@ -431,7 +499,68 @@ fn collect_enum_constants(class: &ClassFile) -> Vec<String> {
     constants
 }
 
-/// Collect all classes referenced in the constant pool for import generation.
+/// Collect static field initializers from <clinit> method.
+/// Returns a map of field_name -> initial_value Expression.
+/// Used for interfaces and classes to render `static final Type NAME = VALUE;`
+#[allow(dead_code)]
+fn collect_static_field_initializers(
+    class: &ClassFile,
+    pool: &[Recoverable<ConstantPoolEntry>],
+) -> std::collections::HashMap<String, Expression> {
+    let inits = std::collections::HashMap::new();
+
+    // Find <clinit> method
+    let clinit_method = class
+        .methods
+        .iter()
+        .find(|m| get_method_name(class, m) == "<clinit>");
+
+    if let Some(method) = clinit_method
+        && let Some(code) = &method.code
+    {
+        let instrs = &code.instructions;
+        let mut i = 0;
+        while i < instrs.len() {
+            // Pattern: putstatic Class.field = value
+            if let crate::bytecode::InstructionKind::Field {
+                opcode: 0xb3, // putstatic
+                cp_index,
+            } = instrs[i].kind
+            {
+                // Get field info
+                if let Some(Recoverable::Present(ConstantPoolEntry::FieldRef {
+                    class_index,
+                    name_and_type_index,
+                })) = pool.get(cp_index as usize)
+                    && let Some(Recoverable::Present(ConstantPoolEntry::Class { name_index })) =
+                        pool.get(*class_index as usize)
+                    && let Some(_field_class) = get_utf8_from_pool(pool, *name_index)
+                {
+                    // Only process fields of this class (or interfaces)
+                    if let Some(Recoverable::Present(ConstantPoolEntry::NameAndType {
+                        name_index: field_name_idx,
+                        descriptor_index: field_desc_idx,
+                    })) = pool.get(*name_and_type_index as usize)
+                        && let Some(_field_name) = get_utf8_from_pool(pool, *field_name_idx)
+                        && let Some(_field_desc) = get_utf8_from_pool(pool, *field_desc_idx)
+                    {
+                        // Look back to find the value being stored
+                        // Pattern: ... value putstatic
+                        if i > 0 {
+                            // The value should be on the stack before putstatic
+                            // We can't easily reconstruct it from instructions alone,
+                            // but for simple cases (new, ldc, getstatic), we can try
+                            // For now, skip - we'd need full stack simulation
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    inits
+}
 fn collect_imports(class: &ClassFile, this_class: &str) -> Vec<String> {
     let this_dot = this_class.replace('/', ".");
     let this_pkg = this_dot.rfind('.').map(|i| &this_dot[..i]);

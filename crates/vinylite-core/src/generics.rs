@@ -383,7 +383,11 @@ pub fn format_class_sig(sig: &ClassSignature) -> (String, String, Vec<String>) {
             .map(|tp| {
                 let mut s = tp.name.clone();
                 if let Some(ref bound) = tp.bound {
-                    s.push_str(&format!(" extends {}", format_generic(bound)));
+                    // Omit redundant `extends java.lang.Object` bound
+                    let bound_str = format_generic(bound);
+                    if bound_str != "java.lang.Object" {
+                        s.push_str(&format!(" extends {}", bound_str));
+                    }
                 }
                 for ib in &tp.interface_bounds {
                     s.push_str(&format!(" & {}", format_generic(ib)));

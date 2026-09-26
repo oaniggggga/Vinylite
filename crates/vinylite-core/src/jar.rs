@@ -15,6 +15,12 @@ pub fn parse_jar(bytes: &[u8]) -> Vec<JarEntry> {
     // One poisoned class must not take down the whole archive: extraction
     // or parse failures degrade to diagnostics + `None`, never a panic.
     for (name, class_bytes) in crate::zipmini::extract_class_files(bytes) {
+        // Skip module-info.class and package-info.class to avoid javac module mode
+        // issues and spurious interface/@interface rendering.
+        if name.ends_with("module-info.class") || name.ends_with("package-info.class") {
+            continue;
+        }
+
         // Keep the lossy archive path normalized to `/` separators.
         let name_str = name;
         let mut parser = crate::classfile::ClassFileParser::new(&class_bytes);

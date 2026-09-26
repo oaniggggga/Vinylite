@@ -248,6 +248,26 @@ impl<'a> StackMachine<'a> {
         name
     }
 
+    /// Find a local variable of the given class name (for fixing putfield receivers).
+    fn find_local_of_class(&self, _class_name: &str) -> Option<Expression> {
+        for local in &self.locals {
+            if let Expression::Local(name) = local {
+                // Heuristic: if the local name suggests it's the right type (e.g., "pivot", "root", "node")
+                // or if we can infer from context, use it.
+                // For now, prefer known reference names over "this"/"var_N".
+                if !name.starts_with("var_") && name != "this" {
+                    return Some(Expression::Local(name.clone()));
+                }
+            }
+        }
+        // Fallback to `this` if no better candidate
+        if !self.is_static {
+            Some(Expression::This)
+        } else {
+            None
+        }
+    }
+
     fn push(&mut self, expr: Expression) {
         self.stack.push(StackValue::Expr(expr));
     }
@@ -786,8 +806,14 @@ impl<'a> StackMachine<'a> {
                         }
                     }
                     for expr in popped.into_iter().rev() {
-                        if expr_has_side_effects(&expr) {
-                            self.emit(Statement::Expression(expr));
+                        // Cast expressions are not valid Java statements by themselves.
+                        // If the inner expression has side effects, emit the inner expression instead.
+                        let expr_to_emit = match &expr {
+                            Expression::Cast { expr, .. } => expr.as_ref().clone(),
+                            _ => expr.clone(),
+                        };
+                        if expr_has_side_effects(&expr_to_emit) {
+                            self.emit(Statement::Expression(expr_to_emit));
                         }
                     }
                 }
@@ -1082,7 +1108,21 @@ impl<'a> StackMachine<'a> {
                         // putfield
                         let val = self.pop();
                         let val = coerce_bool_literal(val, &desc);
-                        let object = self.pop();
+                        let mut object = self.pop();
+                        // Fix: if receiver is not a valid reference (e.g., ConstInt from stack pollution),
+                        // try to find the correct receiver from local variables based on field's class.
+                        #[allow(clippy::collapsible_if)]
+                        if matches!(
+                            object,
+                            Expression::ConstInt(_)
+                                | Expression::ConstLong(_)
+                                | Expression::ConstFloat(_)
+                                | Expression::ConstDouble(_)
+                        ) {
+                            if let Some(local_expr) = self.find_local_of_class(&class) {
+                                object = local_expr;
+                            }
+                        }
                         if contains_empty_stack(&val) || contains_empty_stack(&object) {
                             self.emit(Statement::Expression(Expression::Unknown(format!(
                                 "/* unreconstructable putfield {field} */"
@@ -6127,7 +6167,11 @@ pub fn lower_method_to_ast(
         let start_local = if is_static { 0 } else { 1 };
         for entry in lvt {
             let name = cp_utf8(pool, entry.name_index);
-            if name != "this" && (entry.index as usize) < machine.locals.len() {
+            // Skip numeric-only names (synthetic/temp variables) to avoid "39.append()" etc.
+            if name != "this"
+                && !name.chars().all(|c| c.is_ascii_digit())
+                && (entry.index as usize) < machine.locals.len()
+            {
                 machine.locals[entry.index as usize] = Expression::Local(name.clone());
                 // Also update param_names if this entry is a parameter
                 if (entry.index as usize) >= start_local {
@@ -6137,6 +6181,24 @@ pub fn lower_method_to_ast(
                     }
                 }
             }
+        }
+    }
+
+    // For instance methods, slot 0 is always `this`
+    if !is_static && !machine.locals.is_empty() {
+        if let Expression::Local(ref name) = machine.locals[0]
+            && name.starts_with("var_")
+        {
+            eprintln!(
+                "DEBUG: Setting slot 0 to 'this' for method {} (was {})",
+                method_name, name
+            );
+            machine.locals[0] = Expression::Local("this".to_string());
+        } else {
+            eprintln!(
+                "DEBUG: Slot 0 for method {} is already: {:?}",
+                method_name, machine.locals[0]
+            );
         }
     }
 

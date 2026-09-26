@@ -1,0 +1,22 @@
+method_count: 21
+  com/google/gson/stream/JsonWriter: attr_count=1
+  ()Z: attr_count=1
+  (Ljava/lang/Object;)Ljava/lang/StringBuilder;: attr_count=1
+  toString: attr_count=1
+  isJsonNull: attr_count=3
+  requireNonNull: attr_count=3
+  (Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object;: attr_count=3
+  java/lang/Boolean: attr_count=3
+  valueOf: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  (I)Ljava/lang/Object;: attr_count=3
+  java/lang/Long: attr_count=3
+  (J)Ljava/lang/Long;: attr_count=2
+  java/lang/Number: attr_count=2
+  doubleValue: attr_count=2
+  ()D: attr_count=1

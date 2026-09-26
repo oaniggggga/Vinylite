@@ -18,6 +18,7 @@ pub struct ClassFile {
     pub signature: Option<String>,
     pub annotations: Vec<Annotation>,
     pub deprecated: bool,
+    pub access_flags: u16,
     /// Direct superinterfaces in internal (`java/lang/Comparable`) form.
     pub interfaces: Vec<String>,
 }
@@ -412,6 +413,7 @@ impl<'a> ClassFileParser<'a> {
             signature,
             annotations,
             deprecated: attr_deprecated || class_access_flags & 0x2000 != 0,
+            access_flags: class_access_flags,
             interfaces,
         })
     }

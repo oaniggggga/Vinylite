@@ -1,0 +1,100 @@
+STDOUT:
+
+STDERR:
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\package-info.java:4: error: <identifier> expected
+interface package-info {
+         ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\ReflectionAccessFilter.java:11: error: = expected
+    public static final ReflectionAccessFilter BLOCK_INACCESSIBLE_JAVA;
+                                                                      ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\ReflectionAccessFilter.java:12: error: = expected
+    public static final ReflectionAccessFilter BLOCK_ALL_JAVA;
+                                                             ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\ReflectionAccessFilter.java:13: error: = expected
+    public static final ReflectionAccessFilter BLOCK_ALL_ANDROID;
+                                                                ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\ReflectionAccessFilter.java:14: error: = expected
+    public static final ReflectionAccessFilter BLOCK_ALL_PLATFORM;
+                                                                 ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\ReflectionAccessFilter.java:19: error: initializers not allowed in interfaces
+    static {
+           ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\annotations\package-info.java:4: error: <identifier> expected
+interface package-info {
+         ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\LinkedTreeMap.java:264: error: not a statement
+        0.height = Math.max(pivotLeft.height, 0) + 1;
+        ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\LinkedTreeMap.java:264: error: ';' expected
+        0.height = Math.max(pivotLeft.height, 0) + 1;
+          ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\LinkedTreeMap.java:280: error: not a statement
+        0.height = Math.max(pivotRight.height, 0) + 1;
+        ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\LinkedTreeMap.java:280: error: ';' expected
+        0.height = Math.max(pivotRight.height, 0) + 1;
+          ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\package-info.java:4: error: <identifier> expected
+interface package-info {
+         ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\JsonTreeWriter.java:49: error: not a statement
+                    (JsonArray) element.add(value);
+                    ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\TypeAdapters$28.java:83: error: not a statement
+                (JsonObject) current.add(name, value);
+                ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\TypeAdapters$28.java:85: error: not a statement
+                (JsonArray) current.add(value);
+                ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\TypeAdapters$EnumTypeAdapter.java:41: error: illegal start of expression
+                    [String; var_11 = annotation.alternate();
+                    ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\TypeAdapters$EnumTypeAdapter.java:41: error: not a statement
+                    [String; var_11 = annotation.alternate();
+                     ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\util\ISO8601Utils.java:54: error: not a statement
+        45.append(43);
+        ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\internal\bind\util\ISO8601Utils.java:54: error: ';' expected
+        45.append(43);
+           ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\reflect\package-info.java:4: error: <identifier> expected
+interface package-info {
+         ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader$1.java:17: error: not a statement
+            (JsonTreeReader) reader.promoteNameToValue();
+            ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:525: error: ';' expected
+            this.peekedString = 39.nextQuotedValue(34);
+                                   ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:559: error: : expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                              ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:559: error: ')' expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                                                 ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:559: error: ';' expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                                                                            ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:708: error: : expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                              ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:708: error: ')' expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                                                 ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonReader.java:708: error: ';' expected
+            this.peekedString = (p != 10 ? 39.nextQuotedValue(34) : this.nextUnquotedValue());
+                                                                                            ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonWriter.java:62: error: not a statement
+        1.usesEmptyNewlineAndIndent = false;
+        ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\JsonWriter.java:62: error: ';' expected
+        1.usesEmptyNewlineAndIndent = false;
+          ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\com\google\gson\stream\package-info.java:4: error: <identifier> expected
+interface package-info {
+         ^
+C:\Users\mrmal\Desktop\Agent\betterpilot\gson_decompiled\META-INF\versions\9\module-info.java:2: error: '{' expected
+public class module-info {
+                   ^
+32 errors
